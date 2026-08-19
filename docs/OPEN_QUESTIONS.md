@@ -227,17 +227,23 @@ fallback so the two layers price identically.
 
 #### 7.1a Follow-ups this ruling opens
 
-1. **$308,885,500 is a floor, not the answer.** 5,377 chargeable legs (12.9%)
-   have an unresolved activity, and `split_into_legs()` deliberately never lets
-   an unknown invent a split — so genuine Discharge→Load calls are being missed
-   wherever the draft delta, FGIS and dictionary all came up empty. **682
-   single-leg calls have ≥2 berth stops and contain at least one unresolved
-   stop**; if each were really one split, that is **+$3,661,000**. Worth
-   resolving activity harder before the number is treated as final.
-2. **Does a `No Cargo` leg accrue a fee?** 239 legs berth but work no cargo
-   (bunkers, stores, repair, lay-by). Currently counted — **$2,061,500**, of
-   which $1,837,500 is bulk. A ship at a berth is still being agented, but
-   confirm.
+1. **$308,885,500 is a floor, not the answer — but do not chase it here.**
+   5,377 chargeable legs (12.9%) have an unresolved activity, and
+   `split_into_legs()` deliberately never lets an unknown invent a split — so
+   genuine Discharge→Load calls are being billed once. **682 single-leg calls
+   have ≥2 berth stops and contain at least one unresolved stop**; if each were
+   really a split, that is **+$3,661,000**.
+
+   **Ruled by William, 2026-08-19**: *"nan fields need to be ignored as will
+   populate from other sources."* The gap therefore closes when the additional
+   source tables land (§5), not by inferring harder from what MRTIS already
+   holds. Leave the NULLs NULL, keep reporting the floor, and re-price once the
+   activity columns are populated.
+2. **Does a `No Cargo` leg accrue a fee? — REFRAMED 2026-08-19, now §8.**
+   239 legs, currently counted at $2,061,500. `No Cargo` turns out not to be an
+   observation about the ship at all — it is the zone dictionary speaking in the
+   absence of draft evidence, which makes it a NaN substitute. Split out into
+   its own question below.
 3. **`open_end` calls** (274 chargeable legs, $2,065,000) never record an SWP
    exit, so the call boundary is inferred from the next entry. Included as
    normal; flagging only because the call is incomplete in the source.
@@ -303,3 +309,50 @@ The proposed discriminator, which cleanly separates Egret from the other 30:
 refuse the merge when the corrupted-IMO rows contain **no `Enter`/`Exit`
 event** and their date range **does not overlap** the period the good vessel
 actually carried that name. Confirm before implementing.
+
+## 8. What is `No Cargo`, and should it bill? — OPEN, raised 2026-08-19
+
+**What it is.** Not an inference about the vessel. `No Cargo` is
+`dictionaries/zone_facility.csv` speaking: the 14 zones marked
+`ops = Layberth` with `Rule = "No cargo ever takes place"` —
+
+> Violet Dock 1-5, Buck Kreihs, Andry St, Alabo St, Poland St, Mandeville St,
+> Gov Nicholls St, Esplanade Ave, Perry Street, Marlex
+
+**When it fires.** `classify()` tries draft delta -> FGIS certificate -> zone
+dictionary -> nothing. The dictionary is only reached when the first two are
+empty. **All 239 `No Cargo` legs have `draft_delta_ft` NULL** — there is no
+draft evidence on a single one. So `No Cargo` is asserted *exactly where the
+evidence is missing*: it is a NaN substitute.
+
+The stays themselves look real — median 3-6 days, longest 55 — and the busiest
+berths are Buck Kreihs (59 legs, a repair yard), Perry Street (53), Poland St
+(36) and the Violet Docks (50 combined). Nothing suggests the label misdescribes
+what happened. The problem is what it *does*.
+
+**Why it matters.** Unlike an unresolved stop — which joins the leg in progress
+and can never invent a split — `No Cargo` is a distinct activity value, so it
+**opens a leg boundary**, and every extra leg is an extra fee:
+
+| Effect | Calls | Fee |
+|---|---|---|
+| Splits created **only** because a `No Cargo` label sits beside real cargo work | 147 | **$1,347,500** |
+| Splits that would survive without it (real Discharge/Load either side) | 24 | — |
+| Calls that are a lay-up and nothing else (sole leg) | 66 | **$532,000** |
+
+**The tension with the NaN ruling.** *"nan fields need to be ignored as will
+populate from other sources"* — but `No Cargo` is precisely what gets written
+into a field that would otherwise be NaN. Applied consistently, a zone-rule
+label derived in the absence of evidence should not be able to manufacture a
+billable split.
+
+**Two decisions, deliberately separate:**
+
+- **8a. Can a layberth stop open a leg?** Recommend **no**. A lay-by is not a
+  cargo job, so it cannot be the "discharge then load" split that was ruled on;
+  it should join the leg in progress exactly as an unresolved stop does.
+  Worth **-$1,347,500**.
+- **8b. Does a pure lay-up call charge at all?** 66 calls, **$532,000**, 43 of
+  them bulk at $10,500. A ship laid up at Violet Dock or in for repair at Buck
+  Kreihs is still handled by an agent, so this may well be chargeable — a
+  genuinely different question from 8a.
