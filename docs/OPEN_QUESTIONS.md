@@ -310,7 +310,7 @@ refuse the merge when the corrupted-IMO rows contain **no `Enter`/`Exit`
 event** and their date range **does not overlap** the period the good vessel
 actually carried that name. Confirm before implementing.
 
-## 8. What is `No Cargo`, and should it bill? — OPEN, raised 2026-08-19
+## 8. What is `No Cargo`, and should it bill? — RESOLVED, William, 2026-08-19
 
 **What it is.** Not an inference about the vessel. `No Cargo` is
 `dictionaries/zone_facility.csv` speaking: the 14 zones marked
@@ -346,16 +346,24 @@ into a field that would otherwise be NaN. Applied consistently, a zone-rule
 label derived in the absence of evidence should not be able to manufacture a
 billable split.
 
-**Two decisions, deliberately separate:**
+**Two decisions, deliberately separate — both decided 2026-08-19:**
 
-- **8a. Can a layberth stop open a leg?** Recommend **no**. A lay-by is not a
-  cargo job, so it cannot be the "discharge then load" split that was ruled on;
-  it should join the leg in progress exactly as an unresolved stop does.
-  Worth **-$1,347,500**.
-- **8b. Does a pure lay-up call charge at all?** 66 calls, **$532,000**, 43 of
-  them bulk at $10,500. A ship laid up at Violet Dock or in for repair at Buck
-  Kreihs is still handled by an agent, so this may well be chargeable — a
-  genuinely different question from 8a.
+- **8a. Can a layberth stop open a leg? No.** A lay-by is not a cargo job, so
+  it cannot be the "discharge then load" split that was ruled on; it joins the
+  leg in progress exactly as an unresolved stop does. Split calls fell 4.4% →
+  4.1% of calls (1,787 → 1,632).
+- **8b. Does a pure lay-up call charge at all? No — "no fee on departing a
+  layberth."** A leg bills only if it did real, non-layberth work somewhere; a
+  leg of nothing but layberth stops accrues nothing, exactly like a call that
+  never berthed at all. 142 pure lay-up legs moved from billed to $0. (54
+  legs that mix a layberth stop with a genuine other berth, e.g. bunkers at a
+  refinery with unresolved activity, still bill as before — only the layberth
+  stop itself is exempt.)
+
+Combined effect on the ruling-basis total: **$304,808,000 → $298,868,500**
+(-$5,939,500), over 41,334 → 40,245 chargeable legs. Implemented in
+`split_into_legs()` and the leg-fee computation in
+`scripts/build_port_calls.py`; see `docs/PORT_CALL_SPEC.md` §4.
 
 ## 9. Extending the ships register to tankers and the other types — 2026-08-19
 

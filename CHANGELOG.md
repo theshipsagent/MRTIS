@@ -5,6 +5,25 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — §8 resolved: layberth stops don't split and don't bill (2026-08-19)
+
+- **8a — a layberth (`No Cargo`) stop can no longer open a leg boundary.**
+  `split_into_legs()` now treats `No Cargo` the same as unresolved for
+  splitting purposes: it joins the leg in progress and never becomes the
+  leg's `cur_activity`, so a real Discharge → No Cargo → Load sequence still
+  splits on the Discharge/Load boundary as if the layberth stop weren't
+  there. Split calls fell 4.4% → 4.1% (1,787 → 1,632).
+- **8b — "no fee on departing a layberth."** A leg now bills only if it did
+  real, non-layberth work somewhere; a leg of nothing but layberth stops (a
+  pure lay-up or repair call) accrues nothing, exactly like a call that never
+  berthed at all. 142 pure lay-up legs moved from billed to $0. A leg that
+  mixes a layberth stop with a genuine other berth (e.g. bunkers at a
+  refinery, activity unresolved) still bills as it always did — only the
+  layberth stop itself is fee-exempt (54 such legs, $413,000, unchanged).
+- Combined effect on the ruling-basis fee total: **$304,808,000 →
+  $298,868,500** (-$5,939,500), over 41,334 → 40,245 chargeable legs.
+  `docs/OPEN_QUESTIONS.md` §8 and `docs/PORT_CALL_SPEC.md` §4 updated.
+
 ### Fixed — tonnage naming and ship-type gap-fill (2026-08-19)
 
 - **`actual_tons` renamed to `estimated_tons`** on `port_call`, `port_call_leg`

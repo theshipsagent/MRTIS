@@ -7,6 +7,38 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
+## 2026-08-19 — §8 resolved: layberth stops don't split and don't bill
+
+### Decided (by William, 2026-08-19)
+
+- **8a.** A layberth stop can't open a leg boundary — confirmed the earlier
+  recommendation. Treated exactly like an unresolved stop for splitting.
+- **8b.** "Also no fee on departing a layberth" — resolves 8b directly: a leg
+  bills only if it did real, non-layberth work somewhere. A pure lay-up leg
+  (nothing but layberth stops) accrues nothing.
+
+### Done
+
+- `split_into_legs()` and the leg-fee computation in
+  `scripts/build_port_calls.py` updated; also had to fix the leg's own
+  `activity`/`method` selection, since a leg can now legitimately mix a
+  layberth stop with a real one (real activity always wins the leg's
+  reported label over `No Cargo`).
+- Rebuilt and reverified: split calls 4.4% → 4.1%, ruling-basis fee
+  $304,808,000 → $298,868,500 (-$5,939,500). Checked the remaining 54 billed
+  `No Cargo`-labeled legs individually — each genuinely touches a second,
+  non-layberth berth (unresolved activity, e.g. bunkers/refinery), so they
+  bill correctly and unchanged; the 142 genuinely pure lay-up legs are $0.
+- `docs/OPEN_QUESTIONS.md` §8, `docs/PORT_CALL_SPEC.md` §4/§9 updated.
+
+### Next session starts by
+
+**OPEN_QUESTIONS §9** — extending the register to tankers/gas/containers;
+check first whether the separate `Ships_Register` world-fleet expansion
+already supersedes the chunk-pull plan recorded there.
+
+---
+
 ## 2026-08-19 — Tonnage naming fix and ship-type gap-fill
 
 **Objective**: review the six-month port-call sample; fix two data-integrity

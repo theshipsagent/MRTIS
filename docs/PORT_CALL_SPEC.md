@@ -197,7 +197,25 @@ load a fresh cargo, sail. `SPLIT_ELIGIBLE_TYPES` is Bulk plus vessels with no
 recorded type (an unrecorded type must not be read as an excluded one);
 `--split-all-types` reverses it. This removed 667 splits, almost all tankers.
 
-**4.4% of calls are split calls.**
+**4.1% of calls are split calls** (down from 4.4% once layberth stops stopped
+manufacturing splits — OPEN_QUESTIONS §8a).
+
+### `No Cargo` (layberth) never splits, and never bills on its own
+
+William's ruling, 2026-08-19 (OPEN_QUESTIONS §8): `No Cargo` (a stop at one of
+the 14 zones `dictionaries/zone_facility.csv` marks `ops = Layberth`, "no cargo
+ever takes place") is not a cargo job, so it cannot be the discharge-then-load
+boundary the split rule is built on. It is treated exactly like an unresolved
+stop for splitting purposes — it joins the leg in progress and never becomes
+the leg's `cur_activity`, so a real Discharge → No Cargo → Load sequence still
+splits on the Discharge/Load boundary as if the layberth stop were not there.
+
+It follows the same rule on the fee: **no fee accrues on departing a layberth.**
+A leg bills only if it did real (non-layberth) work somewhere. A leg of nothing
+but layberth stops — a pure lay-up or repair call — accrues nothing, exactly
+like a call that never berthed at all. A leg that mixes a layberth stop with a
+genuine other berth (e.g. bunkers at a refinery, activity unresolved) still
+bills as it always did; only the layberth stop itself is fee-exempt.
 
 ### Which leg an event belongs to
 
@@ -350,8 +368,8 @@ Two more structural ones worth naming:
 2. **853 legs where the draft contradicts the dictionary.** The dictionary wins,
    so these are AIS variance or a dictionary row that needs widening. Listed by
    facility in the quality report.
-3. **Does a `No Cargo` leg accrue an agency fee?** 421 legs berth but work no
-   cargo — bunkers, stores, repair, lay-by. Currently charged, $3,783,500.
+3. ~~Does a `No Cargo` leg accrue an agency fee?~~ **Resolved, William,
+   2026-08-19 (OPEN_QUESTIONS §8):** no. See §4.
 4. **`canonical_mile` is empty** for all 220 dictionary rows, so the build falls
    back to `most_common_mile_in_data`. Stable, but the canonical column is the
    one that should hold the answer.

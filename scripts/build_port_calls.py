@@ -428,24 +428,33 @@ def split_into_legs(stops, split_eligible=True):
     laden for one agent, discharged, then loaded a fresh cargo for the outbound
     voyage. A stop whose activity could not be resolved joins the leg in
     progress; an unknown is never allowed to invent a split.
+
+    `No Cargo` (William, 2026-08-19, OPEN_QUESTIONS §8a) is treated the same
+    way as unresolved for this purpose: a layberth stop is not a cargo job, so
+    it cannot be the discharge-then-load boundary that was ruled on. It joins
+    the leg in progress and never becomes `cur_activity` itself -- a real
+    Discharge -> No Cargo -> Load sequence still splits into two legs on the
+    Discharge/Load boundary, exactly as if the No Cargo stop were not there.
     """
     if not split_eligible:
         # This vessel type does not split. Everything is one leg, and the leg
         # takes the first activity that resolved.
         return [list(stops)] if stops else []
+    NON_SPLITTING = (None, "No Cargo")
     legs, cur, cur_activity = [], [], None
     for st in stops:
         act = st["activity"]
+        splitting_act = act if act not in NON_SPLITTING else None
         if not cur:
-            cur, cur_activity = [st], act
+            cur, cur_activity = [st], splitting_act
             continue
-        if act is not None and cur_activity is not None and act != cur_activity:
+        if splitting_act is not None and cur_activity is not None and splitting_act != cur_activity:
             legs.append(cur)
-            cur, cur_activity = [st], act
+            cur, cur_activity = [st], splitting_act
         else:
             cur.append(st)
             if cur_activity is None:
-                cur_activity = act
+                cur_activity = splitting_act
     if cur:
         legs.append(cur)
     return legs
@@ -585,8 +594,20 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
 
             head = lg[0] if lg else None
             zinfo = head["zinfo"] if head else {}
-            act = next((st["activity"] for st in lg if st["activity"]), None)
-            method = next((st["method"] for st in lg if st["activity"]), "no_berth_stop" if not lg else "unresolved")
+            # A leg can now mix a No Cargo (layberth) stop with a real cargo
+            # stop -- §8a lets No Cargo join the leg in progress instead of
+            # splitting it off. Real activity (Load/Discharge) always wins the
+            # leg's reported activity over No Cargo; only a leg with nothing
+            # but layberth stops reports No Cargo itself.
+            real_acts = [st for st in lg if st["activity"] and st["activity"] != "No Cargo"]
+            act_src = real_acts[0] if real_acts else next((st for st in lg if st["activity"]), None)
+            act = act_src["activity"] if act_src else None
+            method = act_src["method"] if act_src else ("no_berth_stop" if not lg else "unresolved")
+            # No fee on departing a layberth (William, 2026-08-19, §8b): a leg
+            # bills only if it did real cargo work somewhere -- a leg that is
+            # nothing but No Cargo stops (a pure lay-up/repair call) accrues
+            # nothing, exactly like a call that never berthed at all.
+            real_berth = any(st["activity"] != "No Cargo" for st in lg)
             conflict = any(st["conflict"] for st in lg)
             conflict_reason = next((st["conflict_reason"] for st in lg if st["conflict_reason"]), None)
             delta = next((st["delta"] for st in lg if st["delta"] not in (None, 0)), None)
@@ -612,7 +633,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                                  if pd.notna(ev.at[i, "agency_fee"]))
             fee = agency_fee_for(ev.at[first_i, "vessel_type_canonical"],
                                  ev.at[first_i, "ship_type_group"],
-                                 ev.at[first_i, "imo"]) if lg else None
+                                 ev.at[first_i, "imo"]) if lg and real_berth else None
             leg_id = f"{call_id}-L{j + 1}"
             leg_rows.append({
                 "leg_id": leg_id, "port_call_id": call_id, "leg_seq": j + 1, "leg_count": leg_count,
@@ -1069,9 +1090,16 @@ def write_report(path, calls_df, legs_df, events_df, guards):
     A(f"- Legs that never reached a berth and accrue nothing: "
       f"{int((legs_df.berth_stop_count == 0).sum()):,}")
     nocargo = legs_df[legs_df.activity == "No Cargo"]
-    A(f"- `No Cargo` legs that berthed but worked no cargo (bunkers, stores, repair, lay-by): "
-      f"{len(nocargo):,}, currently charged ${nocargo.agency_fee.fillna(0).sum():,.0f} -- "
-      f"**open**: a ship at a berth is still being agented, but confirm.")
+    nocargo_billed = nocargo[nocargo.agency_fee.notna()]
+    A(f"- `No Cargo` legs -- no resolved cargo activity anywhere in the leg, layberth or otherwise: "
+      f"{len(nocargo):,}. William's ruling, 2026-08-19 (OPEN_QUESTIONS §8): a layberth stop cannot "
+      f"open a leg boundary, and a leg of nothing but layberth stops accrues no fee, exactly like a "
+      f"call that never berthed at all -- {len(nocargo) - len(nocargo_billed):,} of them now bill "
+      f"$0.")
+    A(f"- The remaining {len(nocargo_billed):,} (${nocargo_billed.agency_fee.sum():,.0f}) still bill: "
+      f"each also touches a genuine non-layberth berth whose own activity happened to be unresolved "
+      f"(e.g. a bunkers/refinery call) -- that leg did real, non-layberth work, so it bills exactly "
+      f"as it did before this ruling; only the layberth stop itself is fee-exempt.")
     A(f"- Chargeable legs whose activity is unresolved: "
       f"{int((legs_df.agency_fee.notna() & legs_df.activity.isna()).sum()):,} -- the split rule "
       f"never lets an unknown invent a split, so genuine Discharge->Load calls in here are still "
