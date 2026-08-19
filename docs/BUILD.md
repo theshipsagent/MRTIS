@@ -125,10 +125,9 @@ orders of magnitude.
 `dim_vessel` is enriched with `ship_type` (the register's raw type/family),
 `ship_type_group` (size-bucketed within family), `dwt` (deadweight), and
 `tpc` (tonnes per centimetre immersion) from William's separate
-Ships_Register project (a Sea-web/S&P Global Maritime world-fleet pull).
-The join is by canonical IMO only -- no match, no guess: unmatched vessels
-simply have these four columns NULL (about 40% of vessels as of 2026-08-18 --
-see `docs/DATA_QUALITY.md` for the current match rate).
+Ships_Register project (a Sea-web/S&P Global Maritime pull). The join is by
+canonical IMO only -- no match, no guess: unmatched vessels simply have these
+four columns NULL (see `docs/DATA_QUALITY.md` for the current match rate).
 
 Where a matched family carries no size vocabulary at all (Cement Carrier,
 Aggregates Carrier, self-discharging Lakers, ...), `ship_type_group` would
@@ -137,27 +136,31 @@ backfilled from `ship_type` instead (William, 2026-08-19: a gap is worse than
 a variance in convention). `ship_type` always holds the register's original
 value regardless.
 
-**That gap is a scope boundary, not a coverage failure.** The register's
-`ship_type_group` vocabulary contains only Bulk Carrier and General Cargo
-families -- 19 values, no tanker, container or gas classes at all. It is a
-deliberate dry-cargo extract. So the unmatched vessels are overwhelmingly the
-types it was never pulled for:
+**As of 2026-08-19, the register is a full world-fleet pull, not the earlier
+dry-cargo-only extract.** `fleet_joined` went 20,101 -> 49,763 rows and 19 ->
+133 `ship_type_group` values (tanker, containership, LPG/LNG, reefer, cruise,
+PCC/PCTC, ro-ro all added), with zero blank `ship_type_group` at the source.
+Match coverage against `dim_vessel` went **60.9% -> 99.4%** of all vessels
+(**61.1% -> 99.8%** of those with a valid IMO). An earlier version of this
+section described the gap as a deliberate dry-cargo scope boundary requiring a
+further Sea-web pull for tankers/containers/gas (see `OPEN_QUESTIONS.md` §9)
+-- that pull turned out to already be superseded by this world-fleet
+expansion, done in the Ships_Register project directly; no further chunk pull
+was needed once the refresh below ran.
 
-| Type | Unmatched vessels | Share of gap |
-|---|---|---|
-| Tanker | 3,174 | 79.9% |
-| Container | 379 | 9.5% |
-| Gas | 182 | 4.6% |
-| Bulk | 93 | 2.3% |
-| (no type recorded) | 68 | 1.7% |
-| Passenger | 35 | 0.9% |
-| Other / Reefer | 41 | 1.0% |
-
-The genuine in-scope gap is ~160 dry-cargo vessels, which is hand-checkable.
-Closing the rest means widening the Sea-web pull to tankers/containers/gas and
-extending `ship_type_group` with their size vocabularies -- not finding a second
-source, which would have nowhere to put the result. (An earlier version of this
-paragraph said the gap was "largely passenger/cruise"; passenger is 0.9% of it.)
+**24 vessels with a valid-format IMO remain unmatched**, none of which need
+another pull: 13 have MRTIS-side checksum-invalid IMOs (a key-repair problem,
+not a register gap), 10 are present in Sea-web's source data but held behind
+its pre-1980 build-year filter, and 1 (`9493523`, Stena Premium) is genuinely
+absent from the register. Two of the pre-1980 vessels are active merchant
+tonnage rather than genuine edge cases -- `7633375` Sunnanvik (cement carrier,
+1978, 8,407 dwt) and `7711725` Radcliffe R. Latimer (self-discharging Laker,
+1978, 37,257 dwt) -- and remain an open call for William: let 1978 merchant
+tonnage through the gate, or accept them billing without `dwt`/`tpc` (their
+agency fee is unaffected either way -- both already carry a Zone Report
+`Type` of `Bulk`, which decides the fee before `ship_type_group` is ever
+consulted). A further 39 vessels carry no IMO at all and were never
+candidates for this join.
 
 The reference data lives at `dictionaries/ships_register_fleet.csv`, a
 snapshot exported from `Ships_Register/data/out/ships_register.duckdb`'s

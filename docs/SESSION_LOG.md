@@ -7,6 +7,60 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
+## 2026-08-19 — Ships register refreshed to the full world-fleet pull
+
+**Objective**: §9 (extending the register to tankers/gas/containers) — check
+whether the separate `Ships_Register` world-fleet expansion already
+supersedes the chunk-pull plan before pulling from Sea-web again.
+
+### Found
+
+It does. William confirmed the expansion is done and the vessels are there.
+`Ships_Register/data/out/ships_register.duckdb`'s `fleet_joined`: 49,763
+rows, 133 `ship_type_group` values, zero blanks, zero null/duplicate IMOs —
+exactly the shape recorded when that expansion happened. The chunk-pull plan
+prepared for this session's §9 was never needed and was never run.
+
+### Done
+
+- Refreshed `dictionaries/ships_register_fleet.csv` from `fleet_joined` (the
+  documented `docs/BUILD.md` procedure). Rebuilt the full chain
+  (`build_db.py` → `build_fgis_match.py` → `build_port_calls.py`); all
+  guardrails still pass.
+- Match coverage against `dim_vessel`: **60.9% → 99.4%** of all vessels
+  (**61.1% → 99.8%** of those with a valid IMO) — matches what was predicted
+  when the world-fleet expansion happened. `dwt`/`tpc` now populate 99.7% of
+  port calls, up from roughly 60%.
+- 24 vessels with a valid IMO remain unmatched — the same known set as
+  before (13 checksum-invalid, 10 behind the pre-1980 gate, 1 genuinely
+  absent). No further pull needed.
+- `docs/BUILD.md` "Ships register enrichment" rewritten (the dry-cargo-scope
+  paragraph was now doubly stale); `OPEN_QUESTIONS.md` §9 marked resolved,
+  original chunk-pull plan kept for the record.
+- **Corrected an earlier same-day claim**: the `ship_type_group` backfill did
+  *not* fix *Radcliffe R. Latimer*'s billing tier as I'd said — its Zone
+  Report `Type` was already `Bulk`, which decides the fee before
+  `ship_type_group` is ever consulted. Caught while verifying this refresh.
+- **Raised, not fixed**: `vessel_key`/`event_key` are row-position, so this
+  refresh — which touched only register enrichment — still forced a full
+  FGIS + port-call rebuild from zero. Logged as `OPEN_QUESTIONS.md` §10.
+
+### Open
+
+- **§9 residual**: let 1978 merchant tonnage (Sunnanvik, Radcliffe R.
+  Latimer) through Sea-web's pre-1980 build-year gate, or accept them billing
+  without `dwt`/`tpc`? Their agency fee is unaffected either way.
+- **§10**: is a stable, natural-key-derived `vessel_key`/`event_key` worth
+  the schema change, given the register/dictionaries/feed all get revised on
+  an ongoing basis and each one currently pays for a full downstream rebuild?
+
+### Next session starts by
+
+Nothing pending from William as of this entry — §7, §8 and §9 are resolved;
+§10 (stable keys) is raised but deliberately not scoped or started.
+
+---
+
 ## 2026-08-19 — §8 resolved: layberth stops don't split and don't bill
 
 ### Decided (by William, 2026-08-19)
@@ -55,9 +109,13 @@ gaps William spotted while reviewing it.
 2. **`ship_type` (the register's raw type/family) is added**, and where a
    register family has no size vocabulary — so `ship_type_group` would
    otherwise be NULL — `ship_type_group` is backfilled from `ship_type`.
-   "Gaps are worse than variances in convention." 16 vessels in the current
-   warehouse gain a group this way, including *Radcliffe R. Latimer* (IMO
-   7711725), which now bills at the bulk tier.
+   "Gaps are worse than variances in convention." 16 vessels in the
+   then-current register snapshot gain a group this way. **Correction, same
+   day**: I originally claimed this fixed *Radcliffe R. Latimer*'s (IMO
+   7711725) billing tier -- wrong, its `vessel_type_canonical` is already
+   `Bulk` from the Zone Report's own Type field, so `agency_fee_for()` never
+   even reached `ship_type_group` for it. Caught while verifying the
+   world-fleet register refresh (see the entry above this one).
 
 ### Done
 

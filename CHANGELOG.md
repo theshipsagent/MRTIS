@@ -5,6 +5,32 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — ships register refreshed to the full world-fleet pull (2026-08-19)
+
+- **`dictionaries/ships_register_fleet.csv` refreshed** from the
+  `Ships_Register` project's `fleet_joined` table, now a full world-fleet pull
+  (20,101 -> 49,763 rows, 19 -> 133 `ship_type_group` values -- tanker,
+  containership, LPG/LNG, reefer, cruise, PCC/PCTC, ro-ro all added), not the
+  earlier dry-cargo-only extract. Superseded the chunk-pull plan prepared for
+  this in `OPEN_QUESTIONS.md` §9 -- that pull was never run; the world-fleet
+  expansion in the separate project made it unnecessary.
+- Full chain rebuilt (`build_db.py` -> `build_fgis_match.py` ->
+  `build_port_calls.py`), all guardrails pass. Match coverage against
+  `dim_vessel`: **60.9% -> 99.4%** of all vessels (**61.1% -> 99.8%** of those
+  with a valid IMO). `port_call.dwt`/`.tpc` populated on 40,055 of 40,170
+  calls (99.7%), up from roughly 60%.
+- 24 vessels with a valid-format IMO remain unmatched (13 checksum-invalid,
+  10 behind Sea-web's pre-1980 build-year gate, 1 genuinely absent) -- none
+  need another pull. `docs/BUILD.md` and `OPEN_QUESTIONS.md` §9 rewritten.
+- **Correction**: an earlier same-day entry claimed the `ship_type_group`
+  backfill (below) fixed *Radcliffe R. Latimer*'s billing tier. Wrong --
+  see that entry's correction and `OPEN_QUESTIONS.md` §9.
+- **Raised**: `vessel_key`/`event_key` are row-position, not a stable
+  identity, so every core rebuild -- including this one, which only touched
+  register enrichment -- forces re-deriving the FGIS and port-call layers
+  from zero even when no vessel or event actually changed. Logged as
+  `OPEN_QUESTIONS.md` §10; not fixed here, needs its own scoping.
+
 ### Changed — §8 resolved: layberth stops don't split and don't bill (2026-08-19)
 
 - **8a — a layberth (`No Cargo`) stop can no longer open a leg boundary.**
@@ -39,10 +65,17 @@ follows [Keep a Changelog](https://keepachangelog.com/).
   size vocabulary at all (Cement Carrier, Aggregates Carrier, self-discharging
   Lakers, ...), so `ship_type_group` is now backfilled from `ship_type` where
   it would otherwise be NULL — a gap is worse than a variance in convention.
-  16 vessels in the current warehouse gain a `ship_type_group` this way; one,
-  *Radcliffe R. Latimer* (IMO 7711725, flagged open in the Ships_Register
-  world-fleet-refresh thread), now correctly bills at the bulk tier via
-  `build_db.py::agency_fee_for()`'s existing register fallback.
+  16 vessels in the (then-current, pre-world-fleet-refresh) register snapshot
+  gain a `ship_type_group` this way. **Correction, same day**: an earlier
+  version of this entry claimed *Radcliffe R. Latimer* (IMO 7711725) started
+  billing at the bulk tier because of this fix -- checked while verifying the
+  register refresh below and that's wrong. Its `vessel_type_canonical` is
+  already `Bulk` straight from the Zone Report's own Type field, which is
+  priority-1 in `agency_fee_for()` and fires regardless of `ship_type_group` --
+  it was billing correctly before this change touched anything, and after the
+  world-fleet refresh it isn't matched in the register at all (still behind
+  the pre-1980 build-year gate). The `ship_type_group` backfill itself is
+  still correct and still needed for the vessels it actually affects.
 - Fixed an unrelated pre-existing bug in `build_db.py::write_db()`/`main()`:
   `had_port_calls` was computed but never returned, crashing every run after
   the FGIS/port-call-layer drop message. Found while rebuilding to verify the

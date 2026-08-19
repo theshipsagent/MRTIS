@@ -365,7 +365,32 @@ Combined effect on the ruling-basis total: **$304,808,000 → $298,868,500**
 `split_into_legs()` and the leg-fee computation in
 `scripts/build_port_calls.py`; see `docs/PORT_CALL_SPEC.md` §4.
 
-## 9. Extending the ships register to tankers and the other types — 2026-08-19
+## 9. Extending the ships register to tankers and the other types — RESOLVED, 2026-08-19 (superseded)
+
+**Superseded, not executed as planned.** The chunk-pull plan below (Sea-web,
+2 batches of ~2,500 IMOs) was prepared but never run -- William instead
+expanded the separate `Ships_Register` project directly into a full
+world-fleet pull, done the same day. `fleet_joined` went 20,101 -> 49,763
+rows, 19 -> 133 `ship_type_group` values, zero blank groups at the source.
+
+`dictionaries/ships_register_fleet.csv` refreshed from it (`docs/BUILD.md`
+"Ships register enrichment" procedure) and the full chain rebuilt
+(`build_db.py` -> `build_fgis_match.py` -> `build_port_calls.py`). Match
+coverage against `dim_vessel`: **60.9% -> 99.4%** of all vessels (**61.1% ->
+99.8%** of those with a valid IMO), exactly the improvement the world-fleet
+pull was expected to deliver. `port_call.dwt`/`.tpc` now populated on 99.7%
+of calls (40,055 of 40,170), up from roughly 60%.
+
+24 vessels with a valid-format IMO remain unmatched -- 13 checksum-invalid
+(MRTIS-side), 10 behind Sea-web's pre-1980 build-year gate, 1 genuinely
+absent -- none of which call for another pull. **Still open**: whether to let
+1978 merchant tonnage (`7633375` Sunnanvik, `7711725` Radcliffe R. Latimer)
+through that gate. See `docs/BUILD.md` for the full breakdown.
+
+The original chunk-pull plan is kept below for the record, in case a future
+gap needs the same approach.
+
+## 9 (original plan, not executed). Extending the ships register to tankers and the other types — 2026-08-19
 
 **Intent confirmed by William**: yes, extend. The question is the best shape of
 pull, given Sea-web's two caps: **12 display fields per pull** and **2,500 rows
@@ -442,3 +467,34 @@ the complete/incomplete decision resolves cleanly.
 **Needs**: confirmation that 12 fields covers what the other consumers of
 Ships_Register need for these types, and a decision on pulling vs deriving
 `ship_type_group`.
+
+## 10. `vessel_key`/`event_key` are row position, not a stable identity — OPEN, raised 2026-08-19
+
+Both are assigned as `dataframe.index + 1` in `build_db.py` -- arbitrary
+position in that run's rebuild, not derived from anything about the vessel or
+event itself. `dim_vessel.natural_key` (IMO, or `'NONAME:'+name`) already
+exists as a stable, content-derived identity right next to it; the surrogate
+int is only there for smaller/faster joins.
+
+Because the key is positional, `build_db.py` cannot tell whether a given
+vessel or event landed on the same key across two rebuilds, so `write_db()`
+takes the conservative option and drops the FGIS and port-call layers on
+**every** core rebuild, regardless of whether the vessels/events they
+reference actually changed. Raised while refreshing the ships register
+(§9): that refresh only changed register enrichment columns, not a single
+raw event or vessel, and still forced re-deriving both downstream layers
+from zero.
+
+**This will keep recurring.** MRTIS is not a one-off build -- the register,
+the dictionaries and the raw Zone Report feed all get revised on an ongoing
+basis, and each one currently pays for a full FGIS + port-call rebuild.
+
+**Possible fix**: derive `vessel_key`/`event_key` deterministically from a
+stable input (a hash of `natural_key` for vessels; something equivalent for
+events, e.g. hash of `(natural_key, event_time, action, zone)`) instead of
+row position. An unrelated vessel appearing, disappearing or reordering would
+then never renumber anyone else's key -- only a vessel's own identity
+changing (e.g. an IMO repair merging two records) would move it. This is a
+schema-level change (`sql/schema.sql`, `build_db.py`, and every downstream FK
+in the FGIS and port-call layers) -- needs scoping as its own piece of work,
+not folded into an unrelated fix.
