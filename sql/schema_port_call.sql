@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS port_call_leg (
     draft_delta_ft    INTEGER,   -- sailing draft - arrival draft at the leg's berth work
 
     berth_stop_count  INTEGER,
+    -- Berth events inside this leg's visits that are neither the first docking
+    -- nor the last sailing: geofence/AIS artefacts, not operations.
+    geofence_artifact_events INTEGER,
     first_berth_zone  VARCHAR,   -- raw zone of the leg's first berth stop
     first_berth_facility VARCHAR,-- its canonical facility name
     facility_type     VARCHAR,   -- its facility type
@@ -242,6 +245,13 @@ CREATE TABLE IF NOT EXISTS port_call_event (
     -- assembly ------------------------------------------------------------
     berth_stop_seq    INTEGER,   -- which berth stop of the call this event belongs to
     is_berth_stop     BOOLEAN,
+    -- TRUE for a berth event that is neither the first docking nor the last
+    -- sailing of its visit. Overlapping geofences and movement within a berth
+    -- produce these; a large ocean vessel does not dock, sail and redock in
+    -- minutes (William, 2026-08-19). They are KEPT -- the spine never drops a
+    -- source row -- but they are not read as arrivals or sailings, and the
+    -- stop's draft change is measured first-docking to last-sailing across them.
+    is_geofence_artifact BOOLEAN,
     is_anchorage      BOOLEAN,
     -- TRUE on anchorage events that sit before the leg's first berth arrival,
     -- i.e. the dwell that counts as waiting for that berth.

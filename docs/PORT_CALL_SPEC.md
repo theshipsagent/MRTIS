@@ -52,68 +52,104 @@ quietly distorting them.
 
 ---
 
-## 2. Berth stops
+## 2. Berth stops — the visit, not the geofence hit
 
-A **berth stop** is an `Arrive` … `Depart` pair at a zone whose `facility_type`
-is anything other than Anchorage or Pilot Station. That is the same definition
-`build_db.py` already uses to decide whether an agency fee accrues, deliberately
-— one definition of "worked a berth" across the warehouse.
+A **berth stop** is one visit to one facility. Two rulings from William
+(2026-08-19) define it, and both exist because the source is geofence/AIS
+derived rather than a berth log.
 
-A stop with only one half (a sailing with no recorded arrival, or the reverse)
-is still a stop. It is a real gap in the feed, and discarding it would silently
-delete a cargo operation.
+### The canonical facility is the unit, not the zone
+
+> "focus on the facility canonical as will avoid this confusion"
+
+A vessel that sails one berth of an elevator and ties up at the next berth of
+the same elevator has **shifted, not called twice**. The `facility` column in
+`dictionaries/zone_facility.csv` is what says two berths are one facility —
+Zen-Noh Upper and Zen-Noh Lower are both Zen-Noh. `docs/PORT_CALL_EVIDENCE.md`
+says the same from four real SOFs: *"Shifting within a berth is not a second
+berth call."*
+
+### Only the first docking and the last sailing count
+
+> "there are instances where once a vessel docks, it gives some false hits
+> because of moving in berth or overlaying geofences… only the first docking and
+> last sailing applies, and rest ignored, as a physics, a large ocean vessel did
+> not dock and sail and redock in only a few minutes"
+
+Measured in this data, exactly as described:
+
+| Pattern (consecutive berth events, same facility) | Count |
+|---|---|
+| Within 10 minutes of the previous | 2,485 |
+| Dock → sail → **redock** inside 2 hours | 1,070 |
+| Two arrivals in a row | 722 |
+| Two sailings in a row inside 2 hours | 53 |
+
+Carnival Valor is the clean example: it "sails" Julia St at 20:13 and Erato St
+at 20:17 — four minutes and two terminals apart, on overlapping geofences.
+
+So a visit is a run of consecutive berth events at the same facility, or within
+`--berth-bounce-hours` (default **2**) of the previous one. The **first arrival**
+is the docking and the **last departure** is the sailing; everything between is a
+collection artefact. Artefacts are **kept on the spine** and flagged
+`is_geofence_artifact` — the spine never drops a source row — they are simply not
+read as operations, and the visit's draft change is measured across them.
+**5,102 berth events (5.3%) collapse this way.**
+
+An anchorage or pilot-station event between two berth events always ends the
+visit: a vessel that goes to anchor and comes back has genuinely called twice.
+
+A visit with only one half — a sailing with no recorded arrival, or the reverse —
+is still a visit. That is a real gap in the feed, and discarding it would
+silently delete a cargo operation.
 
 ---
 
 ## 3. What the vessel did — `activity`
 
-Evidence order, strongest first. The first one that can speak, wins:
+Evidence order, strongest first.
 
-1. **Draft delta.** Sailed deeper than it arrived → `Load`. Lighter →
-   `Discharge`. Physics, and it needs no dictionary. This is `logic.md`'s
-   "law of physics" rule.
-2. **FGIS.** Draft flat or missing, but a USDA grain certificate was issued
-   against this sailing → `Load`, and the cargo is grain.
-3. **The zone dictionary.** Draft and FGIS both silent, but
-   `dictionaries/zone_facility.csv` says this berth can only ever do one thing:
-   `ops = Load` → Load, `ops = Discharge` → Discharge, `ops = Layberth` (or
-   `Rule = "No cargo ever takes place"`) → `No Cargo`.
-4. **Nothing.** `activity` stays NULL and `activity_method = 'unresolved'`.
+1. **The dictionary, where the facility can only do one thing.**
 
-`activity_method` records which rung was used, on every leg, so a number can
-always be traced to its evidence.
+   > "as per dictionary, a vessel at a grain elevator can only load and only load
+   > cargo group grain" — William, 2026-08-19
 
-### The draft threshold
+   `ops = Load` → Load. `ops = Discharge` → Discharge. `ops = Layberth` (or
+   `Rule = "No cargo ever takes place"`) → `No Cargo`. **This outranks the
+   draft**, because the draft on these records is AIS-derived and noisy while the
+   physical capability of a berth is not: 531 legs previously read as discharges
+   at Load-only facilities were AIS variance, not twenty thousand tonnes of grain
+   coming back off a ship at an export elevator.
+2. **FGIS.** A grain certificate issued against the visit → `Load`, cargo grain.
+3. **The draft delta.** For facilities the dictionary marks `Load/Discharge`
+   (genuinely either) or leaves blank, the draft is what is left: sailed deeper
+   than it arrived → `Load`, lighter → `Discharge`. Measured **first docking to
+   last sailing** across the whole visit, so a shift between berths of one
+   facility cannot manufacture an operation out of a one-foot deballast.
+4. **Nothing.** `activity` stays NULL, `activity_method = 'unresolved'`.
 
-`--min-draft-delta` (default **1**) is how many feet of change count as a cargo
-operation. At the default the source is trusted exactly as recorded. It is a
-real judgement call and it is left exposed rather than baked in:
+`activity_method` records which rung answered, on every leg.
 
-| Threshold | Legs | Activity resolved | Split calls |
-|---|---|---|---|
-| 1 ft (default) | 43,238 | 84.3% | 2,874 (7.2%) |
-| 2 ft | 42,813 | 79.8% | 2,535 (6.3%) |
-| 3 ft | 42,570 | 76.1% | 2,336 (5.8%) |
+Current split: dictionary 35.7%, draft 46.8%, FGIS 0.8%, unresolved 13.4%, and
+3.3% of legs never reached a berth at all. **83.3% resolved.**
 
-At 1 ft the evidence is genuinely thin: among berths the dictionary marks
-one-directional, a ±1 ft delta agrees with the dictionary 35 times and
-contradicts it 29 — a coin toss. Raising the threshold costs resolved activity
-and removes ~340 split calls. **Open for William to rule on.**
+`--min-draft-delta` (default 1 ft) sets how much draft change counts as cargo
+work on the berths where the draft still decides. It matters far less than it
+did before the facility and geofence rules landed — the case it used to break on
+(Federal Icon, a one-foot deballast across a Zen-Noh shift reading as a
+discharge) is now handled structurally.
 
 ### When evidence disagrees
 
 Flagged, never silently settled — `activity_conflict` and
 `activity_conflict_reason`:
 
+- `draft` — the dictionary decided and the draft says otherwise. Usually AIS
+  variance; occasionally a dictionary row that needs widening.
 - `fgis` — a grain certificate was issued but the vessel sailed lighter.
-- `dictionary` — the draft shows a cargo movement in a direction the dictionary
-  says this berth never works.
 
-**The draft wins in both cases.** 531 legs sail a median 14 ft lighter from
-berths the dictionary marks Load-only (mostly ADM Destrehan Buoys) — that is a
-20,000-tonne discharge, not a rounding artefact. The dictionary is incomplete
-there, and the flag is how it gets found and corrected rather than overruled in
-silence.
+853 legs (2.0%). The quality report lists the facilities where it happens most,
+largest first, so the dictionary can be corrected from evidence.
 
 ---
 
@@ -138,7 +174,7 @@ load of soybeans for China at ADM Reserve (25 ft → 45 ft), with eleven days at
 AMA and LaPlace anchorages in between — exactly what the Statements of Fact
 show (`docs/PORT_CALL_EVIDENCE.md`).
 
-**7.2% of calls are split calls.**
+**6.1% of calls are split calls.**
 
 ### Which leg an event belongs to
 
@@ -266,16 +302,18 @@ Two more structural ones worth naming:
 
 ## 9. Known gaps, for William
 
-1. **The draft threshold** (§3) — a ruling is needed on whether ±1 ft counts as
-   cargo work.
-2. **Dictionary `ops` blanks** drive most of the 6,792 unresolved legs: General
-   Cargo (1,532), Cruise (1,038), Mid-Stream (552). Filling `ops` for those rows
-   in `dictionaries/zone_facility.csv` converts them directly.
-3. **`ops` contradictions** (§3) — ADM Destrehan Buoys and a handful of others
-   are marked Load-only but demonstrably discharge.
-4. **`canonical_mile` is empty** in the zone dictionary for all 220 rows, so the
-   build falls back to `most_common_mile_in_data`. That is fine and stable, but
-   the canonical column is the one that should hold the answer.
+1. **Dictionary `ops` blanks** now drive most of the 7,139 unresolved legs.
+   Filling `ops` in `dictionaries/zone_facility.csv` converts them directly, and
+   since the dictionary now outranks the draft, each fill is decisive rather than
+   advisory. The cruise berths (Erato St, Julia St) are the clearest — a cruise
+   ship works no cargo, and they currently resolve to nothing.
+2. **853 legs where the draft contradicts the dictionary.** The dictionary wins,
+   so these are AIS variance or a dictionary row that needs widening. Listed by
+   facility in the quality report.
+3. **Does a `No Cargo` leg accrue an agency fee?** 421 legs berth but work no
+   cargo — bunkers, stores, repair, lay-by. Currently charged, $3,783,500.
+4. **`canonical_mile` is empty** for all 220 dictionary rows, so the build falls
+   back to `most_common_mile_in_data`. Stable, but the canonical column is the
+   one that should hold the answer.
 5. **17,100 events (5.9%) sit outside any call**, nearly all because the export
-   window opens mid-voyage. An earlier Zone Report export would absorb most of
-   them.
+   window opens mid-voyage. An earlier Zone Report export would absorb most.

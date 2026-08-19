@@ -265,34 +265,62 @@ def assemble_calls(ev):
     return calls, unassigned
 
 
-def berth_stops_of(ev, call):
-    """Pair Arrive/Depart at berth zones into stops, in time order.
+def berth_stops_of(ev, call, zdict, bounce_hours=2.0):
+    """Group a call's berth events into stops -- one stop per actual visit.
 
-    A stop with only one half (a berth arrival never followed by a sailing, or
-    the reverse) is still a stop -- it is a real gap in the feed, and dropping
-    it would silently delete a cargo operation.
+    Two rulings from William (2026-08-19) shape this, and both exist because the
+    source is geofence/AIS derived rather than a berth log:
+
+    1. **The canonical facility is the unit, not the zone.** A vessel that sails
+       one berth of an elevator and ties up at the next berth of the same
+       elevator has shifted, not called twice. `docs/PORT_CALL_EVIDENCE.md` says
+       the same thing from four real SOFs: "Shifting within a berth is not a
+       second berth call." The `facility` column in
+       dictionaries/zone_facility.csv is what says two berths are one facility
+       (Zen-Noh Upper and Zen-Noh Lower are both Zen-Noh).
+
+    2. **Only the first docking and the last sailing count.** Overlapping
+       geofences and movement within a berth produce false hits: 2,485 berth
+       events in this data sit within ten minutes of the previous one at the
+       same facility, 1,070 are a redock inside two hours, and Carnival Valor
+       "sails" Julia St at 20:13 and Erato St at 20:17 -- four minutes and two
+       terminals apart. As physics, a large ocean vessel does not dock, sail and
+       redock in minutes, nor sail three times in an hour. Everything between the
+       first arrival and the last sailing of a visit is an artefact of the
+       collection, and is marked as such rather than read as an operation.
+
+    An anchorage or pilot-station event between two berth events always ends the
+    visit -- a vessel that goes to anchor and comes back has genuinely called
+    twice. Artefact events are KEPT on the spine and flagged
+    (`is_geofence_artifact`); they are only excluded from being read as the
+    stop's arrival or sailing.
     """
-    stops, open_stop = [], None
+    episodes, cur, prev_i = [], None, None
     for i in call:
         if ev.at[i, "facility_type"] in NON_BERTH:
+            cur, prev_i = None, None      # went to anchor: the visit is over
             continue
-        action = ev.at[i, "action_src"]
-        if action == "Arrive":
-            if open_stop is not None:
-                stops.append(open_stop)
-            open_stop = {"arrive_idx": i, "depart_idx": None, "zone": ev.at[i, "src_zone"]}
-        elif action == "Depart":
-            if open_stop is None or open_stop["zone"] != ev.at[i, "src_zone"]:
-                if open_stop is not None:
-                    stops.append(open_stop)
-                open_stop = {"arrive_idx": None, "depart_idx": i, "zone": ev.at[i, "src_zone"]}
-            else:
-                open_stop["depart_idx"] = i
-            stops.append(open_stop)
-            open_stop = None
-    if open_stop is not None:
-        stops.append(open_stop)
-    return stops
+        ref_action = ev.at[i, "action_src"]
+        facility = zone_lookup(zdict, ev.at[i, "src_zone"], ref_action).get(
+            "facility", ev.at[i, "src_zone"])
+        if cur is not None:
+            gap = (ev.at[i, "event_time"] - ev.at[prev_i, "event_time"]).total_seconds() / 3600.0
+            if facility != cur["facility"] and gap > bounce_hours:
+                cur = None
+        if cur is None:
+            cur = {"facility": facility, "zone": ev.at[i, "src_zone"], "events": []}
+            episodes.append(cur)
+        cur["events"].append(i)
+        prev_i = i
+
+    for ep in episodes:
+        arrives = [i for i in ep["events"] if ev.at[i, "action_src"] == "Arrive"]
+        departs = [i for i in ep["events"] if ev.at[i, "action_src"] == "Depart"]
+        ep["arrive_idx"] = arrives[0] if arrives else None     # first docking
+        ep["depart_idx"] = departs[-1] if departs else None    # last sailing
+        endpoints = {ep["arrive_idx"], ep["depart_idx"]}
+        ep["artifacts"] = [i for i in ep["events"] if i not in endpoints]
+    return episodes
 
 
 def overlap_hours(t0, t1, w0, w1):
@@ -304,16 +332,29 @@ def overlap_hours(t0, t1, w0, w1):
 
 
 def resolve_activity(ev, stop, zinfo, fgis, min_delta=1):
-    """Decide what the vessel did at this berth, and say how we know.
+    """Decide what the vessel did at this facility, and say how we know.
 
-    Order of evidence, strongest first:
-      1. draft delta -- sailed deeper than it arrived means it loaded; lighter
-         means it discharged. Physics, and it needs no dictionary.
-      2. FGIS -- a USDA grain certificate issued against this sailing means the
-         vessel loaded grain, full stop.
-      3. the zone dictionary -- an Elevator can only load; a Layberth never
-         works cargo at all.
-      4. nothing -- activity stays NULL. Never guessed.
+    Order of evidence, strongest first. William's ruling (2026-08-19) puts the
+    dictionary at the top: *"as per dictionary, a vessel at a grain elevator can
+    only load and only load cargo group grain... because of variances in the AIS
+    signal, focus on the facility canonical as will avoid this confusion."*
+
+      1. **The dictionary, where the facility can only do one thing.** An
+         elevator loads. A layberth never works cargo. This outranks the draft
+         because the draft on these records is AIS-derived and noisy, while the
+         physical capability of the berth is not: 531 legs previously read as
+         discharges at Load-only facilities were AIS variance, not 20,000 tonnes
+         of grain coming back off a ship at an export elevator.
+      2. **FGIS.** A grain certificate issued against this visit means the vessel
+         loaded grain.
+      3. **The draft delta.** For facilities the dictionary marks Load/Discharge
+         (genuinely either) or leaves blank, the draft is what is left: sailed
+         deeper than it arrived means Load, lighter means Discharge.
+      4. **Nothing.** `activity` stays NULL. Never guessed.
+
+    The draft is measured across the WHOLE visit -- first docking to last sailing
+    -- so a shift between berths of one facility cannot manufacture a fake
+    operation out of a one-foot deballast.
     """
     a_idx, d_idx = stop["arrive_idx"], stop["depart_idx"]
     ad = ev.at[a_idx, "draft_ft"] if a_idx is not None else None
@@ -322,11 +363,12 @@ def resolve_activity(ev, stop, zinfo, fgis, min_delta=1):
     if pd.notna(ad) and pd.notna(dd):
         delta = int(dd) - int(ad)
 
-    # Both halves of a stop can carry certificates -- 13 stops in this data have
-    # grain certified against the berth arrival AND against the sailing. Taking
-    # only one of them would quietly drop the other's tonnage, so they merge.
-    hits = [fgis[int(ev.at[i, "event_key"])] for i in (d_idx, a_idx)
-            if i is not None and int(ev.at[i, "event_key"]) in fgis]
+    # Certificates are collected from EVERY event of the stop, not just its two
+    # endpoints: 13 stops carry grain certified against the arrival as well as
+    # the sailing, and a stop spanning a shift or a geofence bounce has interior
+    # events that can carry their own. Reading only the endpoints drops them.
+    hits = [fgis[int(ev.at[i, "event_key"])] for i in stop["events"]
+            if int(ev.at[i, "event_key"]) in fgis]
     cargo = None
     if hits:
         cargo = {
@@ -337,40 +379,31 @@ def resolve_activity(ev, stop, zinfo, fgis, min_delta=1):
             "destination": ", ".join(sorted({h["destination"] for h in hits if h["destination"]})) or None,
         }
 
+    ops = (zinfo.get("ops") or "").strip()
+    rule = (zinfo.get("rule") or "").strip().lower()
     activity = method = None
-    if delta is not None and abs(delta) >= min_delta:
-        activity, method = ("Load" if delta > 0 else "Discharge"), "draft_delta"
+    if ops in ("Load", "Discharge"):
+        activity, method = ops, "dictionary"
+    elif ops == "Layberth" or rule == "no cargo ever takes place":
+        activity, method = "No Cargo", "dictionary"
     elif cargo is not None:
         activity, method = "Load", "fgis"
+    elif delta is not None and abs(delta) >= min_delta:
+        activity, method = ("Load" if delta > 0 else "Discharge"), "draft_delta"
     else:
-        ops = (zinfo.get("ops") or "").strip()
-        rule = (zinfo.get("rule") or "").strip().lower()
-        if ops == "Load":
-            activity, method = "Load", "dictionary"
-        elif ops == "Discharge":
-            activity, method = "Discharge", "dictionary"
-        elif ops == "Layberth" or rule == "no cargo ever takes place":
-            activity, method = "No Cargo", "dictionary"
-        else:
-            method = "unresolved"
+        method = "unresolved"
 
     # Evidence disagreeing with evidence is a finding, not something to resolve
-    # quietly. Two kinds, both surfaced rather than settled:
-    #   'fgis'       -- a grain certificate was issued, but the vessel sailed lighter.
-    #   'dictionary' -- the draft shows a real cargo movement in the direction the
-    #                   zone dictionary says this berth never works. Where those
-    #                   two disagree the DRAFT WINS: 531 legs sail 14ft lighter
-    #                   (median) from berths the dictionary marks Load-only, which
-    #                   is a 20,000-tonne discharge, not a rounding artefact. The
-    #                   dictionary is incomplete there, and the flag is how it gets
-    #                   found and corrected.
+    # quietly. The winner is named above; the flag is how the loser gets looked
+    # at. 'draft' means the dictionary decided and the draft says otherwise --
+    # usually AIS variance, occasionally a dictionary row that needs widening.
     conflict_reason = None
-    if method == "draft_delta":
-        ops_dict = (zinfo.get("ops") or "").strip()
-        if cargo is not None and activity == "Discharge":
-            conflict_reason = "fgis"
-        elif ops_dict in ("Load", "Discharge") and activity != ops_dict:
-            conflict_reason = "dictionary"
+    if method == "dictionary" and delta is not None and abs(delta) >= min_delta:
+        drafted = "Load" if delta > 0 else "Discharge"
+        if drafted != activity:
+            conflict_reason = "draft"
+    elif method == "draft_delta" and cargo is not None and activity == "Discharge":
+        conflict_reason = "fgis"
 
     return {
         "activity": activity, "method": method, "conflict": conflict_reason is not None,
@@ -412,7 +445,8 @@ def hours(a, b):
     return round((b - a).total_seconds() / 3600.0, 2)
 
 
-def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards, min_delta=1):
+def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
+                 min_delta=1, bounce_hours=2.0):
     """Produce the three output frames. Pure in-memory -- nothing touches the
     database until every guardrail has passed."""
     call_rows, leg_rows, event_rows = [], [], []
@@ -431,15 +465,15 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                   "open_start" if has_exit else "fragment")
 
         # --- berth stops and what happened at each ---------------------------
-        stops = berth_stops_of(ev, call)
+        stops = berth_stops_of(ev, call, zdict, bounce_hours)
         pos = {i: p for p, i in enumerate(call)}
         for st in stops:
             ref = st["arrive_idx"] if st["arrive_idx"] is not None else st["depart_idx"]
             zinfo = zone_lookup(zdict, ev.at[ref, "src_zone"], ev.at[ref, "action_src"])
             st.update(resolve_activity(ev, st, zinfo, fgis, min_delta))
             st["zinfo"] = zinfo
-            st["end_pos"] = max(pos[i] for i in (st["arrive_idx"], st["depart_idx"]) if i is not None)
-            st["start_pos"] = min(pos[i] for i in (st["arrive_idx"], st["depart_idx"]) if i is not None)
+            st["end_pos"] = max(pos[i] for i in st["events"])
+            st["start_pos"] = min(pos[i] for i in st["events"])
 
         legs = split_into_legs(stops)
         if not legs:                      # a call that never berthed
@@ -574,6 +608,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                 "activity": act, "activity_method": method, "activity_conflict": conflict,
                 "activity_conflict_reason": conflict_reason, "draft_delta_ft": delta,
                 "berth_stop_count": len(lg),
+                "geofence_artifact_events": sum(len(st["artifacts"]) for st in lg),
                 "first_berth_zone": head["zone"] if head else None,
                 "first_berth_facility": zinfo.get("facility"),
                 "facility_type": zinfo.get("facility_type"),
@@ -591,11 +626,11 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                      cargo=cargo, destination=destination, tons=tons, waiting_idx=waiting_idx)
 
         # --- the spine: one row per event ------------------------------------
-        stop_seq_of = {}
+        stop_seq_of, artifacts = {}, set()
         for n, st in enumerate(stops, start=1):
-            for i in (st["arrive_idx"], st["depart_idx"]):
-                if i is not None:
-                    stop_seq_of[i] = n
+            for i in st["events"]:
+                stop_seq_of[i] = n
+            artifacts.update(st["artifacts"])
         dwell_of = {}
         for st in stops:
             if st["arrive_idx"] is not None and st["depart_idx"] is not None:
@@ -648,6 +683,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                 "agency_normalized": bool(m["agency"] is not None and own_agency != m["agency"]),
                 "berth_stop_seq": stop_seq_of.get(i),
                 "is_berth_stop": ft not in NON_BERTH,
+                "is_geofence_artifact": i in artifacts,
                 "is_anchorage": ft == "Anchorage",
                 "is_waiting_time": i in m["waiting_idx"],
                 "dwell_hours": dwell_of.get(i),
@@ -709,6 +745,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             "agency": agent_map.get(ev.at[i, "src_agent"], ev.at[i, "src_agent"]) or None,
             "agency_leg": None, "agency_normalized": False,
             "berth_stop_seq": None, "is_berth_stop": ev.at[i, "facility_type"] not in NON_BERTH,
+            "is_geofence_artifact": False,
             "is_anchorage": ev.at[i, "facility_type"] == "Anchorage",
             "is_waiting_time": False, "dwell_hours": None, "hours_since_prev": None,
             "activity": None, "activity_method": None, "cargo_group": None, "cargo": None,
@@ -847,7 +884,7 @@ def validate(con, calls_df, legs_df, events_df, guards):
                 passed=unresolved == 0)
     conflicts = int(legs_df.activity_conflict.sum())
     guards.soft("evidence agrees on activity (draft vs FGIS vs dictionary)",
-                f"{conflicts:,} legs where two sources disagree; the draft wins and the leg is flagged",
+                f"{conflicts:,} legs where two sources disagree; the stronger evidence wins and the leg is flagged",
                 passed=conflicts == 0)
     no_agency = int(legs_df.agency.isna().sum())
     guards.soft("legs with an agency resolved",
@@ -870,7 +907,7 @@ EVENT_COLUMNS = [
     "ship_type_group", "dwt", "tpc", "src_action", "action", "event_time", "src_zone",
     "berth", "facility", "facility_type", "src_mile", "mile", "draft_ft", "src_agent",
     "agency", "agency_leg", "agency_normalized", "berth_stop_seq", "is_berth_stop",
-    "is_anchorage", "is_waiting_time", "dwell_hours", "hours_since_prev", "activity",
+    "is_geofence_artifact", "is_anchorage", "is_waiting_time", "dwell_hours", "hours_since_prev", "activity",
     "activity_method", "cargo_group", "cargo", "destination", "actual_tons",
     "call_status", "is_split_call", "agency_fee",
 ]
@@ -941,8 +978,11 @@ def write_report(path, calls_df, legs_df, events_df, guards):
         A("")
 
     A("## What the vessel did, and how we know\n")
-    A("Evidence order: draft delta (physics) -> FGIS certificate -> zone dictionary -> nothing. "
-      "An unresolved leg keeps `activity` NULL; it is never guessed.\n")
+    A("Evidence order (William, 2026-08-19): the zone dictionary where a facility can only do "
+      "one thing -> an FGIS certificate -> the draft delta -> nothing. The dictionary outranks "
+      "the draft because the draft is AIS-derived and noisy while the physical capability of a "
+      "berth is not: an export elevator loads. An unresolved leg keeps `activity` NULL; it is "
+      "never guessed.\n")
     A("| Method | Legs | % | Activity |\n|---|---|---|---|")
     for m, n in legs_df.activity_method.value_counts().items():
         acts = legs_df[legs_df.activity_method == m].activity.value_counts()
@@ -955,7 +995,7 @@ def write_report(path, calls_df, legs_df, events_df, guards):
     A("")
     conf = int(legs_df.activity_conflict.sum())
     A(f"- Legs where two pieces of evidence disagree: **{conf:,}** ({conf / n_leg:.2%}). "
-      f"The draft wins; the flag (`activity_conflict`, `activity_conflict_reason`) is how the "
+      f"The stronger evidence wins -- the dictionary over the draft where a facility can only do one thing; the flag (`activity_conflict`, `activity_conflict_reason`) is how the "
       f"disagreement gets found rather than quietly settled.\n")
     if conf:
         A("| Conflict | Legs |\n|---|---|")
@@ -964,9 +1004,9 @@ def write_report(path, calls_df, legs_df, events_df, guards):
         A("")
         dic = legs_df[legs_df.activity_conflict_reason == "dictionary"]
         if len(dic):
-            A("**Zones where the draft repeatedly contradicts the dictionary's `ops`** -- these are "
-              "berths `dictionaries/zone_facility.csv` marks as one-directional but which the draft "
-              "shows working both ways. Worth correcting in the dictionary:\n")
+            A("**Facilities where the draft most often contradicts the dictionary** -- the "
+              "dictionary wins, so these are either AIS variance or a dictionary row that needs "
+              "widening. Worth a look, largest first:\n")
             A("| Zone | Legs | Median draft change (ft) |\n|---|---|---|")
             g = dic.groupby("first_berth_zone").agg(n=("leg_id", "size"),
                                                     med=("draft_delta_ft", "median"))
@@ -983,6 +1023,17 @@ def write_report(path, calls_df, legs_df, events_df, guards):
         label = ftype if pd.notna(ftype) else "_(the call never berthed)_"
         A(f"| {label} | {n:,} |")
     A("")
+
+    A("## Geofence artefacts\n")
+    arte = int(events_df.is_geofence_artifact.sum())
+    berth_ev = int((events_df.is_berth_stop & events_df.port_call_id.notna()).sum())
+    A("Only the first docking and the last sailing of a visit are read as operations "
+      "(William, 2026-08-19). Overlapping geofences and movement within a berth produce the rest: "
+      "a large ocean vessel does not dock, sail and redock in minutes.\n")
+    A(f"- Berth events collapsed as artefacts: **{arte:,}** of {berth_ev:,} ({arte / berth_ev:.1%}). "
+      f"They stay on the spine, flagged `is_geofence_artifact`; they are simply not read as "
+      f"arrivals or sailings, and the visit's draft change is measured across them.")
+    A(f"- Legs containing at least one: {int((legs_df.geofence_artifact_events > 0).sum()):,}\n")
 
     A("## Agency fee\n")
     ruled = float(legs_df.agency_fee.fillna(0).sum())
@@ -1115,7 +1166,7 @@ def export_sample(events_df, calls_df, legs_df, path, n):
                             key=lambda s: s.map(order) if s.name == "port_call_id" else s)
     leg_cols = ["scenario", "port_call_id", "leg_seq", "leg_count", "activity", "activity_method",
                 "activity_conflict_reason", "draft_delta_ft", "first_berth_facility",
-                "facility_type", "berth_stop_count", "berth_arrive_time", "berth_depart_time",
+                "facility_type", "berth_stop_count", "geofence_artifact_events", "berth_arrive_time", "berth_depart_time",
                 "waiting_hours", "berth_hours", "inter_berth_idle_hours", "outbound_idle_hours",
                 "agency", "agency_source", "agent_changed_in_leg", "cargo_group", "cargo",
                 "cargo_source", "destination", "actual_tons", "fgis_record_count",
@@ -1137,6 +1188,11 @@ def main():
                          "operation. 1 (default) trusts the source as recorded; raising it "
                          "treats small changes as ballast/bunker noise and falls through to "
                          "FGIS and the dictionary instead.")
+    ap.add_argument("--berth-bounce-hours", type=float, default=2.0,
+                    help="a berth event this close to the previous one at another facility is "
+                         "read as a geofence artefact of the same visit, not a new call. "
+                         "William, 2026-08-19: a large ocean vessel does not dock, sail and "
+                         "redock in minutes.")
     ap.add_argument("--dry-run", action="store_true", help="assemble and validate, write nothing")
     args = ap.parse_args()
 
@@ -1157,7 +1213,8 @@ def main():
     print("Assembling port calls ...")
     calls, unassigned = assemble_calls(ev)
     calls_df, legs_df, events_df = build_frames(ev, calls, unassigned, zdict, agent_map,
-                                                aliases, fgis, guards, args.min_draft_delta)
+                                                aliases, fgis, guards, args.min_draft_delta,
+                                                args.berth_bounce_hours)
     print(f"  {len(calls_df):,} calls, {len(legs_df):,} legs, {len(events_df):,} spine rows")
 
     print("Checking guardrails ...")
