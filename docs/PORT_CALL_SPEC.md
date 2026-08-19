@@ -121,8 +121,11 @@ Evidence order, strongest first.
    at Load-only facilities were AIS variance, not twenty thousand tonnes of grain
    coming back off a ship at an export elevator.
 2. **FGIS.** A grain certificate issued against the visit → `Load`, cargo grain.
-3. **The draft delta.** For facilities the dictionary marks `Load/Discharge`
-   (genuinely either) or leaves blank, the draft is what is left: sailed deeper
+3. **The draft delta — a pass, not a decider.** Only for facilities the
+   dictionary marks `Load/Discharge` (genuinely either) or leaves blank. Where
+   the facility rule locks the answer the draft is not consulted at all: Elevator,
+   Bulk Cargo and LNG legs are now 100% dictionary-resolved with zero draft
+   involvement. Where it does apply: sailed deeper
    than it arrived → `Load`, lighter → `Discharge`. Measured **first docking to
    last sailing** across the whole visit, so a shift between berths of one
    facility cannot manufacture an operation out of a one-foot deballast.
@@ -132,6 +135,19 @@ Evidence order, strongest first.
 
 Current split: dictionary 35.7%, draft 46.8%, FGIS 0.8%, unresolved 13.4%, and
 3.3% of legs never reached a berth at all. **83.3% resolved.**
+
+How well the draft performs depends entirely on the ship, exactly as William
+predicted: the ambiguous facilities are the buoys, which serve larger vessels
+where the delta is pronounced, while the small general-cargo berths barely move.
+
+| Facility type | Legs decided by draft | Mean abs. delta |
+|---|---|---|
+| Mid-Stream (buoys) | 4,214 | **12.3 ft** |
+| Refinery | 3,965 | 10.1 ft |
+| Chemical Plant | 1,953 | 6.6 ft |
+| Tank Storage | 5,533 | 6.5 ft |
+| General Cargo | 4,329 | **3.8 ft** |
+| Elevator / Bulk Cargo / LNG | 0 | — (dictionary-locked) |
 
 `--min-draft-delta` (default 1 ft) sets how much draft change counts as cargo
 work on the berths where the draft still decides. It matters far less than it
@@ -174,7 +190,14 @@ load of soybeans for China at ADM Reserve (25 ft → 45 ft), with eleven days at
 AMA and LaPlace anchorages in between — exactly what the Statements of Fact
 show (`docs/PORT_CALL_EVIDENCE.md`).
 
-**6.1% of calls are split calls.**
+Only vessel types that genuinely work this way are eligible (William, 2026-08-19:
+*"reduced as the tankers, gas, other, cruise, container and reefer can be
+ignored"*). A split is a dry-cargo pattern — arrive laden, discharge, move up,
+load a fresh cargo, sail. `SPLIT_ELIGIBLE_TYPES` is Bulk plus vessels with no
+recorded type (an unrecorded type must not be read as an excluded one);
+`--split-all-types` reverses it. This removed 667 splits, almost all tankers.
+
+**4.4% of calls are split calls.**
 
 ### Which leg an event belongs to
 

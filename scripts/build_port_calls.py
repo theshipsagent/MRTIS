@@ -53,6 +53,14 @@ NON_BERTH = {"Anchorage", "Pilot Station"}
 ACTION_BERTH = {"Arrive": "Arrived", "Depart": "Sailed"}
 ACTION_ANCHOR = {"Arrive": "Anchor", "Depart": "Weigh Anchor"}
 
+# Vessel types whose calls can genuinely split into a discharge leg and a load
+# leg (William, 2026-08-19: "reduced as the tankers, gas, other, cruise,
+# container and reefer can be ignored"). A split is a dry-cargo pattern -- come
+# in laden, discharge, move up, load a fresh cargo, sail. NULL is included
+# because an unrecorded type must not be read as an excluded one; container,
+# reefer and passenger produce no splits in this data anyway.
+SPLIT_ELIGIBLE_TYPES = {"Bulk", None}
+
 
 # ---------------------------------------------------------------------------
 # dictionaries
@@ -411,7 +419,7 @@ def resolve_activity(ev, stop, zinfo, fgis, min_delta=1):
     }
 
 
-def split_into_legs(stops):
+def split_into_legs(stops, split_eligible=True):
     """Group consecutive berth stops into legs, starting a new leg only when the
     activity genuinely changes.
 
@@ -421,6 +429,10 @@ def split_into_legs(stops):
     voyage. A stop whose activity could not be resolved joins the leg in
     progress; an unknown is never allowed to invent a split.
     """
+    if not split_eligible:
+        # This vessel type does not split. Everything is one leg, and the leg
+        # takes the first activity that resolved.
+        return [list(stops)] if stops else []
     legs, cur, cur_activity = [], [], None
     for st in stops:
         act = st["activity"]
@@ -446,7 +458,7 @@ def hours(a, b):
 
 
 def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
-                 min_delta=1, bounce_hours=2.0):
+                 min_delta=1, bounce_hours=2.0, split_types=SPLIT_ELIGIBLE_TYPES):
     """Produce the three output frames. Pure in-memory -- nothing touches the
     database until every guardrail has passed."""
     call_rows, leg_rows, event_rows = [], [], []
@@ -475,7 +487,10 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             st["end_pos"] = max(pos[i] for i in st["events"])
             st["start_pos"] = min(pos[i] for i in st["events"])
 
-        legs = split_into_legs(stops)
+        eligible = (split_types is None or
+                    (ev.at[first_i, "vessel_type_canonical"]
+                     if pd.notna(ev.at[first_i, "vessel_type_canonical"]) else None) in split_types)
+        legs = split_into_legs(stops, eligible)
         if not legs:                      # a call that never berthed
             legs = [[]]
         leg_count = len(legs)
@@ -1132,6 +1147,41 @@ SAMPLE_SCENARIOS = [
 ]
 
 
+def export_months(events_df, calls_df, legs_df, path, months):
+    """Export every port call starting in the last N months of coverage.
+
+    A whole contiguous window rather than picked examples: the scenario sample
+    proves the assembly handles the hard cases, this shows what the table
+    actually looks like at volume, which is what rules get refined against.
+    """
+    cutoff = calls_df.call_start.max() - pd.DateOffset(months=months)
+    picked = calls_df.loc[calls_df.call_start >= cutoff, "port_call_id"]
+    sub = events_df[events_df.port_call_id.isin(picked)].sort_values(["call_start_sort", "event_seq"]) \
+        if "call_start_sort" in events_df.columns else \
+        events_df[events_df.port_call_id.isin(picked)].sort_values(["event_time", "event_seq"])
+    cols = ["port_call_id", "leg_id", "leg_seq", "event_seq", "vessel_name", "imo", "vessel_type",
+            "ship_type_group", "dwt", "tpc", "action", "event_time", "berth", "facility",
+            "facility_type", "mile", "draft_ft", "activity", "activity_method", "cargo_group",
+            "cargo", "destination", "actual_tons", "src_agent", "agency_leg", "agency_normalized",
+            "is_geofence_artifact", "is_waiting_time", "dwell_hours", "call_status",
+            "is_split_call", "src_zone", "src_action", "src_mile", "src_imo", "src_vessel_type",
+            "event_key"]
+    sub[cols].to_csv(path, index=False)
+
+    legs = legs_df[legs_df.port_call_id.isin(picked)].sort_values(["leg_start", "leg_seq"])
+    leg_cols = ["port_call_id", "leg_id", "leg_seq", "leg_count", "activity", "activity_method",
+                "activity_conflict_reason", "draft_delta_ft", "first_berth_facility",
+                "facility_type", "berth_stop_count", "geofence_artifact_events",
+                "berth_arrive_time", "berth_depart_time", "waiting_hours", "berth_hours",
+                "outbound_idle_hours", "agency", "agency_source", "cargo_group", "cargo",
+                "destination", "actual_tons", "agency_fee", "agency_fee_departures"]
+    legs[leg_cols].to_csv(path.replace(".csv", "_legs.csv"), index=False)
+
+    calls = calls_df[calls_df.port_call_id.isin(picked)].sort_values("call_start")
+    calls.to_csv(path.replace(".csv", "_calls.csv"), index=False)
+    return cutoff, len(picked), len(sub)
+
+
 def export_sample(events_df, calls_df, legs_df, path, n):
     """Write a handful of whole port calls, every event, for eyeball review.
 
@@ -1193,6 +1243,12 @@ def main():
                          "read as a geofence artefact of the same visit, not a new call. "
                          "William, 2026-08-19: a large ocean vessel does not dock, sail and "
                          "redock in minutes.")
+    ap.add_argument("--split-all-types", action="store_true",
+                    help="allow a split call for any vessel type. Off by default: only dry-cargo "
+                         "vessels split (William, 2026-08-19).")
+    ap.add_argument("--sample-months", type=int, default=0,
+                    help="instead of the scenario sample, export every port call starting in the "
+                         "last N months of coverage")
     ap.add_argument("--dry-run", action="store_true", help="assemble and validate, write nothing")
     args = ap.parse_args()
 
@@ -1214,7 +1270,8 @@ def main():
     calls, unassigned = assemble_calls(ev)
     calls_df, legs_df, events_df = build_frames(ev, calls, unassigned, zdict, agent_map,
                                                 aliases, fgis, guards, args.min_draft_delta,
-                                                args.berth_bounce_hours)
+                                                args.berth_bounce_hours,
+                                                None if args.split_all_types else SPLIT_ELIGIBLE_TYPES)
     print(f"  {len(calls_df):,} calls, {len(legs_df):,} legs, {len(events_df):,} spine rows")
 
     print("Checking guardrails ...")
@@ -1229,6 +1286,14 @@ def main():
         write_report(REPORT_PATH, calls_df, legs_df, events_df, guards)
         print(f"\nWrote port_call / port_call_leg / port_call_event to {args.db_path}")
         print(f"Wrote {os.path.relpath(REPORT_PATH, ROOT)}")
+
+    if args.sample_months:
+        out = args.sample_out.replace(".csv", f"_{args.sample_months}mo.csv")
+        cutoff, ncalls, nrows = export_months(events_df, calls_df, legs_df, out, args.sample_months)
+        print(f"\n{args.sample_months}-month sample from {cutoff:%Y-%m-%d}: "
+              f"{ncalls:,} port calls, {nrows:,} events -> {out}")
+        print(f"  plus {os.path.basename(out).replace('.csv', '_legs.csv')} and "
+              f"{os.path.basename(out).replace('.csv', '_calls.csv')}")
 
     if args.sample:
         picked, notes = export_sample(events_df, calls_df, legs_df, args.sample_out, args.sample)
