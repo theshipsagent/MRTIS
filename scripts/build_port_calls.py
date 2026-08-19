@@ -1106,6 +1106,22 @@ def export_sample(events_df, calls_df, legs_df, path, n):
             "src_agent", "agency_leg", "agency_normalized", "is_waiting_time", "dwell_hours",
             "agency_fee", "src_zone", "src_action", "src_mile", "src_imo", "event_key"]
     sub[cols].to_csv(path, index=False)
+
+    # A leg-level companion: the same calls one row per leg, which is the grain
+    # the agency fee is billed on and the fastest way to check the split.
+    legs = legs_df[legs_df.port_call_id.isin(picked)].copy()
+    legs["scenario"] = legs.port_call_id.map(notes)
+    legs = legs.sort_values(["port_call_id", "leg_seq"],
+                            key=lambda s: s.map(order) if s.name == "port_call_id" else s)
+    leg_cols = ["scenario", "port_call_id", "leg_seq", "leg_count", "activity", "activity_method",
+                "activity_conflict_reason", "draft_delta_ft", "first_berth_facility",
+                "facility_type", "berth_stop_count", "berth_arrive_time", "berth_depart_time",
+                "waiting_hours", "berth_hours", "inter_berth_idle_hours", "outbound_idle_hours",
+                "agency", "agency_source", "agent_changed_in_leg", "cargo_group", "cargo",
+                "cargo_source", "destination", "actual_tons", "fgis_record_count",
+                "agency_fee", "agency_fee_departures"]
+    leg_path = path.replace(".csv", "_legs.csv")
+    legs[leg_cols].to_csv(leg_path, index=False)
     return picked, notes
 
 
