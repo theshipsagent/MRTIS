@@ -126,10 +126,30 @@ orders of magnitude.
 `tpc` (tonnes per centimetre immersion) from William's separate
 Ships_Register project (a Sea-web/S&P Global Maritime world-fleet pull).
 The join is by canonical IMO only -- no match, no guess: unmatched vessels
-simply have these three columns NULL (about 40% of vessels as of 2026-08-18,
-largely passenger/cruise and other ship types the current Ships_Register
-batch doesn't cover well -- see `docs/DATA_QUALITY.md` for the current
-match rate).
+simply have these three columns NULL (about 40% of vessels as of 2026-08-18 --
+see `docs/DATA_QUALITY.md` for the current match rate).
+
+**That gap is a scope boundary, not a coverage failure.** The register's
+`ship_type_group` vocabulary contains only Bulk Carrier and General Cargo
+families -- 19 values, no tanker, container or gas classes at all. It is a
+deliberate dry-cargo extract. So the unmatched vessels are overwhelmingly the
+types it was never pulled for:
+
+| Type | Unmatched vessels | Share of gap |
+|---|---|---|
+| Tanker | 3,174 | 79.9% |
+| Container | 379 | 9.5% |
+| Gas | 182 | 4.6% |
+| Bulk | 93 | 2.3% |
+| (no type recorded) | 68 | 1.7% |
+| Passenger | 35 | 0.9% |
+| Other / Reefer | 41 | 1.0% |
+
+The genuine in-scope gap is ~160 dry-cargo vessels, which is hand-checkable.
+Closing the rest means widening the Sea-web pull to tankers/containers/gas and
+extending `ship_type_group` with their size vocabularies -- not finding a second
+source, which would have nowhere to put the result. (An earlier version of this
+paragraph said the gap was "largely passenger/cruise"; passenger is 0.9% of it.)
 
 The reference data lives at `dictionaries/ships_register_fleet.csv`, a
 snapshot exported from `Ships_Register/data/out/ships_register.duckdb`'s
