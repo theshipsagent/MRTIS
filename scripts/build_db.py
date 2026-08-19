@@ -52,6 +52,36 @@ AGENCY_FEE_OTHER = 3_500.0
 # worked cargo, so no agency fee accrues. Everything else in the zone
 # dictionary is a real berth of some kind.
 NON_BERTH_FACILITY_TYPES = {"Anchorage", "Pilot Station"}
+
+
+def agency_fee_for(vessel_type_canonical, ship_type_group, imo):
+    """Agency fee in USD for a sailing by this vessel, or None if no fee accrues.
+
+    Priority:
+      1. The Zone Report's own Type, canonicalized -- 'Bulk' is the higher tier,
+         every other known type (tanker, gas, container, cruise, reefer) the lower.
+      2. Where Type was never recorded for the vessel, fall back to the ships
+         register: a 'Bulk Carrier-*' group is the higher tier. This recovers
+         real Capesize/Kamsarmax bulkers that would otherwise be under-billed --
+         the register knows them even though the Zone Report Type is blank.
+      3. A vessel with NO usable IMO and no type from either source is not an
+         ocean vessel being agented -- it is a tug, workboat, naval or
+         government craft (observed: 'Usace Mat Sink Unit', 'French Warship',
+         'Cg Eagle', 'Shop'). No fee accrues; agency_fee stays NULL.
+
+    A vessel whose IMO merely fails its check digit still bills at the lower
+    tier -- a corrupted IMO is a typo on a real ship, not the absence of one.
+    """
+    if vessel_type_canonical == "Bulk":
+        return AGENCY_FEE_BULK
+    if isinstance(vessel_type_canonical, str) and vessel_type_canonical:
+        return AGENCY_FEE_OTHER
+    if isinstance(ship_type_group, str) and ship_type_group:
+        return (AGENCY_FEE_BULK if ship_type_group.startswith("Bulk Carrier")
+                else AGENCY_FEE_OTHER)
+    if not isinstance(imo, str) or not imo:
+        return None
+    return AGENCY_FEE_OTHER
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
@@ -331,7 +361,8 @@ def build_dims_and_fact(df: pd.DataFrame, ships_register: pd.DataFrame,
         dim_zone[["zone_key", "zone_name", "facility_type"]], on="zone_name", how="left"
     )
     fact = fact.merge(
-        dim_vessel[["vessel_key", "vessel_type_canonical"]], on="vessel_key", how="left"
+        dim_vessel[["vessel_key", "vessel_type_canonical", "ship_type_group", "imo"]],
+        on="vessel_key", how="left",
     )
 
     # --- agency fee ---
@@ -344,8 +375,12 @@ def build_dims_and_fact(df: pd.DataFrame, ships_register: pd.DataFrame,
         & ~fact["facility_type"].isin(NON_BERTH_FACILITY_TYPES)
     )
     fact["agency_fee"] = pd.Series(
-        [AGENCY_FEE_BULK if t == "Bulk" else AGENCY_FEE_OTHER
-         for t in fact["vessel_type_canonical"]],
+        [
+            agency_fee_for(vt, stg, imo)
+            for vt, stg, imo in zip(
+                fact["vessel_type_canonical"], fact["ship_type_group"], fact["imo"]
+            )
+        ],
         index=fact.index,
     ).where(is_berth_sailing)
 
@@ -469,6 +504,18 @@ def write_db(db_path, schema_sql_path, dim_vessel, dim_agent, dim_zone, fact_zon
 def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fact_zone_event,
                  dim_vessel_name_alias):
     fee = fact_zone_event[fact_zone_event["agency_fee"].notna()]
+    _berth_sailings = fact_zone_event[
+        (fact_zone_event["action"] == "Depart")
+        & fact_zone_event["agency_fee"].isna()
+        & fact_zone_event["zone_key"].isin(
+            dim_zone.loc[
+                ~dim_zone["facility_type"].isin(NON_BERTH_FACILITY_TYPES)
+                & dim_zone["facility_type"].notna(),
+                "zone_key",
+            ]
+        )
+    ]
+    _unpriced = len(_berth_sailings)
     n_vessels = len(dim_vessel)
     n_invalid_imo = (~dim_vessel["imo_valid"]).sum()
     n_agents = len(dim_agent)
@@ -523,7 +570,15 @@ def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fac
         "## Known data quality notes",
         "",
         f"- {n_blank_agent:,} events ({n_blank_agent / n_events:.1%}) have no Agent in the source data "
-        "and are loaded with agent_key = NULL.",
+        "and are loaded with agent_key = NULL. **This is not random**: in the raw feed, "
+        "rows carrying a clean 7-digit IMO are missing an Agent only 1.8% of the time, "
+        "while rows with a malformed IMO (8/9-digit, 3/4-digit or blank) are missing one "
+        "~99% of the time. 8/9-digit rows are 4.7% of the feed but carry 49% of every "
+        "blank Agent -- IMO, Agent and Type go missing together, which points at one "
+        "defective input path rather than scattered omissions. `Nordic Aki`/`Bonita Aki` "
+        "(IMO 9505974) is the clean example: 52 rows with the 7-digit IMO all carry "
+        "Type=Tank and Agent=General Maritime, while all 713 rows with the 9-digit "
+        "variant carry neither.",
         "- Vessels without a standard 7-digit IMO (tugs, barges, and some entry variance) are "
         "identified by name instead of IMO. If the same name is reused for genuinely different "
         "vessels over time, they will be merged into one dim_vessel row -- worth spot-checking "
@@ -537,6 +592,7 @@ def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fac
         f"- Chargeable sailings (a `Depart` from a facility berth -- not an anchorage "
         f"or pilot station): {len(fee):,}",
         f"- Total agency fees accrued: ${fee['agency_fee'].sum():,.0f}",
+        f"- Berth sailings accruing no fee: {_unpriced:,} (see the note below)",
         "- Rate is set by the **vessel**, not the berth: "
         f"`vessel_type_canonical = 'Bulk'` -> ${AGENCY_FEE_BULK:,.0f}, everything else "
         f"-> ${AGENCY_FEE_OTHER:,.0f}. Vessel-based was chosen over berth-based on "
@@ -558,12 +614,17 @@ def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fac
                      f"| {int(row['count']):,} | ${row['sum']:,.0f} |")
     lines += [
         "",
-        "- **Caveat**: the catch-all tier absorbs every vessel type that is neither "
-        "bulk nor liquid -- container, cruise/passenger, reefer -- plus "
-        f"{int(_by_type.loc['(no type recorded)', 'count']) if '(no type recorded)' in _by_type.index else 0:,} "
-        "sailings whose source `Type` was blank. Charging an *unknown* type as "
-        "non-bulk is a decision, not a fact; revisit if those vessels turn out to be "
-        "predominantly bulk carriers.",
+        "- The catch-all $3,500 tier absorbs every vessel type that is neither bulk "
+        "nor liquid -- container, cruise/passenger, reefer.",
+        "- Where the Zone Report never recorded a Type, the rate falls back to the "
+        "ships register (`ship_type_group LIKE 'Bulk Carrier%'` -> the higher tier), "
+        "which recovers real Capesize/Kamsarmax bulkers that would otherwise be "
+        "under-billed.",
+        f"- **{_unpriced:,} berth sailings accrue no fee at all** (`agency_fee` NULL): "
+        "vessels with no usable IMO and no type from either source. These are tugs, "
+        "workboats and government craft -- Dixie Raider, Jesse A Mollineaux, "
+        "Usace Mat Sink Unit, French Warship, Cg Eagle, 'Shop' -- not ocean vessels "
+        "being agented. NULL here means *no fee accrues*, not *unknown*.",
         "",
         "## Ships register enrichment",
         "",

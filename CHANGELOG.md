@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Agency fee refinements**: where the Zone Report never recorded a Type,
+  the rate falls back to the ships register (`ship_type_group LIKE
+  'Bulk Carrier%'` -> higher tier), recovering real Capesize/Kamsarmax
+  bulkers under-billed at $3,500 (+$147,000). And a vessel with no usable
+  IMO and no type from either source accrues NO fee -- `agency_fee` NULL
+  means *no fee*, not *unknown*. Net effect -$322,000.
 - **`fact_zone_event.agency_fee`** -- agency fee in USD accrued on sailing
   from a facility berth (`action='Depart'` at any zone whose `facility_type`
   is not Anchorage or Pilot Station); NULL elsewhere, so `SUM(agency_fee)`
@@ -75,6 +81,18 @@ follows [Keep a Changelog](https://keepachangelog.com/).
   skipped, and known type conflicts blocked -- so genuinely different vessels
   sharing a name are never merged (both `Aquitania`s, and `Sea Voyager` with
   two valid twins, correctly stay separate).
+- **Blank Agent is not random -- it tracks malformed IMOs.** Rows with a
+  clean 7-digit IMO are missing an Agent 1.8% of the time; rows with a
+  malformed IMO (8/9-digit, 3/4-digit or blank) are missing one ~99% of the
+  time. 8/9-digit rows are 4.7% of the feed but carry 49% of every blank
+  Agent -- IMO, Agent and Type go missing together, pointing at one
+  defective input path. `Nordic Aki`/`Bonita Aki` (IMO 9505974, spotted by
+  William) is the clean case: all 52 rows with the 7-digit IMO carry
+  Type=Tank and Agent=General Maritime; all 713 rows with the 9-digit
+  variant carry neither. Documented, not yet repaired. Measured backfill
+  potential once port calls exist (SWP Enter->Exit brackets): 83.7% of
+  missing types and 32.4% of missing agents are recoverable from elsewhere
+  in the same call.
 - **136 fact rows were orphaned from `dim_vessel` with a NULL `vessel_key`.**
   Introduced when vessel identity was rewired onto the repaired IMO:
   `bool(nan)` is True, so an unguarded truth test let NaN become the natural
@@ -109,6 +127,19 @@ follows [Keep a Changelog](https://keepachangelog.com/).
      `mrtis_event_key`.
 
 ### Changed
+- **Exclusion list extended from 9 to 28 vessels.** The agency-fee work
+  surfaced 19 vessels with no usable IMO and no type from any source that
+  were nonetheless accruing fees on berth sailings -- tugs and workboats
+  (Dixie Raider, Jesse A Mollineaux, Sarah Dann), government craft
+  (`Usace Mat Sink Unit`, `Cg Eagle`, `French Warship`) and non-vessels
+  (`Shop`, `Abc Test`). Cruise-line support records (`Carnival Valor Rb2`,
+  `Ncl Escape Rb Sb`, `Carnival Liberty Rb1/Rb2`) were deliberately left in
+  place -- note these are 1-2 event support craft, NOT the cruise ships,
+  which are separate IMO-bearing records (Carnival Valor 9236389, 1,760
+  events) and are untouched. Total filtered: 23,669 rows, 28 vessels.
+  Side effect: 4 zones (Andry St, Castleton Braithwaite, Magellan Marrero 3,
+  Mandeville St) no longer appear in `dim_zone` -- their only recorded
+  traffic was excluded workboats.
 - **Dredge/workboat traffic filtered out at ingest** rather than flagged
   (William, 2026-08-19: "if we remove the dredges on the list also on front
   end, removes those records and focuses the table"). 9 vessels, 23,228 rows

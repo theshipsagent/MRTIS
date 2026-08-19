@@ -115,9 +115,17 @@ CREATE TABLE IF NOT EXISTS fact_zone_event (
     -- 487 departures where the two bases disagree in favour of the vessel --
     -- a bulk carrier sailing a chemical plant berth accrues 10500, not 3500.
     --
-    -- CAVEAT: the 'everything else' tier absorbs 106 departures whose source
-    -- Type was blank. Unknown is being charged as non-bulk, which is a
-    -- decision rather than a fact -- see docs/DATA_QUALITY.md.
+    -- Where the Zone Report never recorded a Type for the vessel, the rate
+    -- falls back to the ships register (`ship_type_group LIKE 'Bulk Carrier%'`
+    -- -> 10500), which recovers real Capesize/Kamsarmax bulkers that would
+    -- otherwise be under-billed at the lower tier.
+    --
+    -- NULL on a berth sailing means NO FEE ACCRUES, not "unknown": a vessel
+    -- with no usable IMO and no type from either source is not an ocean
+    -- vessel being agented but a tug, workboat or government craft (observed:
+    -- 'Usace Mat Sink Unit', 'French Warship', 'Cg Eagle', 'Shop'). 134 such
+    -- sailings. A merely check-digit-invalid IMO still bills -- that is a typo
+    -- on a real ship, not the absence of one.
     agency_fee        DOUBLE
 );
 
