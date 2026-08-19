@@ -1,0 +1,83 @@
+# MRTIS session log
+
+One entry per working session, newest first. This is the file the **begin-session
+ritual** reads to recover context (`/Users/billy/Documents/File Maker/00_PROJECT/RITUALS.md`).
+Decisions live in `docs/OPEN_QUESTIONS.md`, code history in `CHANGELOG.md`; this
+is just the thread — what was done, what was decided, what to pick up next.
+
+---
+
+## 2026-08-19 — Port call assembly layer
+
+**Objective**: build the port call assembly layer, and produce a specific output
+table for the matched and transformed data with the raw MRTIS event as the spine.
+
+### Done
+
+- **`port_call_event`** — the deliverable. One row per `fact_zone_event`
+  (290,436, always), source values preserved in `src_*` columns beside every
+  canonical one. Plus `port_call` (40,170) and `port_call_leg` (41,985).
+- **`scripts/build_port_calls.py`** + `sql/schema_port_call.sql` +
+  `docs/PORT_CALL_SPEC.md` (the rules) and `docs/PORT_CALL_QUALITY.md`
+  (auto-generated health of each run).
+- **Build guardrails** (`scripts/lib/guardrails.py`) — hard invariants abort the
+  build before anything is written; soft checks report source health. Caught two
+  real bugs during the session before either reached the database.
+- **Six-month sample** exported for review at all three grains
+  (`sample_port_calls_6mo*.csv`, 2,899 calls / 3,018 legs / 18,104 events).
+- **`docs/BUILD.md` corrected**: the ships-register gap is not "largely
+  passenger/cruise" (0.9%) — it is 80% tankers.
+- Ten commits, pushed to `origin/main`.
+
+### Decided (by William, all 2026-08-19 — see OPEN_QUESTIONS §7, §9)
+
+1. **Agency fee is per port call, not per berth — except a split discharge-then-
+   load, which is two.** The billing unit is therefore the operational leg.
+   Implemented: **$304,808,000** over 41,334 chargeable legs, against
+   $349,625,500 over 48,167 berth departures on the old basis (−12.8%). The old
+   basis is preserved alongside for comparison.
+2. **The canonical facility is the unit, not the zone.** Two berths of one
+   elevator are one visit. Zen-Noh Upper → Zen-Noh Lower is a shift.
+3. **Only the first docking and the last sailing of a visit count.** Overlapping
+   geofences and movement in berth produce false hits; a large ocean vessel does
+   not dock, sail and redock in minutes. 5,102 berth events (5.3%) collapse as
+   artefacts — kept on the spine, flagged, simply not read as operations.
+4. **The dictionary outranks the AIS draft** where a facility can only do one
+   thing. A grain elevator loads. The draft is a pass, not a decider: Elevator,
+   Bulk Cargo and LNG resolve 100% from the dictionary with zero draft
+   involvement.
+5. **Only dry-cargo vessel types split.** Tankers, gas, cruise, container,
+   reefer and other are not eligible; Bulk and no-recorded-type are. Splits fell
+   2,874 → 1,787 (4.4% of calls).
+
+### Found
+
+- **Do not scrape VesselFinder.** Its own terms forbid building a dataset from
+  it (§5.3, §7.4, §9), and the premise fails anyway: the test vessel *Ireland*
+  (9770543) is already in the register with a TPC that VesselFinder does not
+  publish for any ship. Equasis and MarineTraffic are more restrictive still.
+- **`ship_type_group` is a pure step function of DWT within family** — zero
+  monotonicity violations across 18,752 register rows. The size class can be
+  derived rather than stored or scraped. Careful: the *published* industry bands
+  overlap and would corrupt the register's clean partition; use the register's
+  own cut points.
+- **The register gap is a scope boundary, not a coverage failure** — the
+  vocabulary holds only Bulk Carrier and General Cargo families.
+
+### Open
+
+- Does a `No Cargo` leg accrue a fee? 421 legs, $3,783,500.
+- Dictionary `ops` blanks now drive the 7,139 unresolved legs, and each fill is
+  decisive rather than advisory. Cruise berths (Erato St, Julia St) are the
+  clearest — a cruise ship works no cargo.
+- 853 legs where the draft contradicts the dictionary. Dictionary wins; listed
+  by facility in the quality report in case a row needs widening.
+- TPC probably needs a ruling of its own: captured per call from hydrostatic
+  tables, versus estimated by formula and flagged. The column is 63.6% populated
+  and the two should not be silently mixed.
+
+### Next session starts by
+
+Reviewing `sample_port_calls_6mo.csv`, then extending the Sea-web pull to
+tankers/containers/gas — see **OPEN_QUESTIONS §9**, which has the sizing and the
+upload chunks already prepared.

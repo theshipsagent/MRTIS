@@ -356,3 +356,81 @@ billable split.
   them bulk at $10,500. A ship laid up at Violet Dock or in for repair at Buck
   Kreihs is still handled by an agent, so this may well be chargeable — a
   genuinely different question from 8a.
+
+## 9. Extending the ships register to tankers and the other types — 2026-08-19
+
+**Intent confirmed by William**: yes, extend. The question is the best shape of
+pull, given Sea-web's two caps: **12 display fields per pull** and **2,500 rows
+per pull**. For the dry-bulk batch, getting the 24 fields needed took **2
+passes**. His read: tankers, cruise and the rest can stay on the same 12 fields
+and will not need the second half of the second pass.
+
+**That is right, and it is easier than the dry-bulk batch was**, for three
+reasons:
+
+### 1. MRTIS consumes six fields, not 24
+
+`dictionaries/ships_register_fleet.csv` carries exactly:
+
+    imo, name_of_ship_ref, ship_type_ref, ship_type_group, dwt, tpc
+
+All six fit inside a single 12-field pull with six slots spare. Whatever else
+pass 2 was fetching for the dry-bulk batch, MRTIS does not read it — so for this
+extension **one pass is enough**, not one and a half. (Confirm against the
+FileMaker/Ships_Register consumers before dropping pass 2 outright; MRTIS is not
+necessarily the only downstream.)
+
+### 2. It is 3,972 vessels — two chunks
+
+Every MRTIS vessel with a valid IMO and no register match:
+
+| Type | Vessels |
+|---|---|
+| Tanker | 3,174 |
+| Container | 379 |
+| Gas | 182 |
+| Bulk | 93 |
+| (no type recorded) | 68 |
+| Passenger | 35 |
+| Other / Reefer | 41 |
+| **Total** | **3,972** |
+
+At 2,500 per pull that is **2 chunks × 1 pass = 2 downloads**, against the 80
+the full 50k universe needed. The chunk files are already written in the format
+`PULL_PLAN.md` step 3 expects — a bare IMO list, sorted, ready to upload:
+
+- `dictionaries/register_gap_chunk_01.txt` — 2,500 IMOs
+- `dictionaries/register_gap_chunk_02.txt` — 1,472 IMOs
+- `dictionaries/register_gap_imos.csv` — the same vessels with name, MRTIS type,
+  event count and date range, for eyeballing before the pull
+
+### 3. No top-up problem, because these vessels were never pulled
+
+`PULL_PLAN.md` records the trap: *"a vessel quarantined in an earlier batch for
+missing one pass is only completed by a later batch that supplies every pass for
+it again, in that same batch."* That bites a top-up of vessels already in the
+register. These 3,972 are not in it at all, so the batch is self-contained —
+whatever passes are run, they are all run for these IMOs within one batch, and
+the complete/incomplete decision resolves cleanly.
+
+### Worth knowing before deciding
+
+- **These 3,972 vessels account for 125,704 events — 43% of the warehouse.**
+  Tankers call far more often than their headcount suggests. This is not a
+  long-tail cleanup; it is nearly half the traffic currently unable to be priced
+  or classified by anything except the Zone Report's own Type field.
+- **`ship_type_group` will need new size vocabularies.** The register's 19
+  values are all Bulk Carrier or General Cargo. Tankers need MR/LR1/LR2/Aframax/
+  Suezmax/VLCC, containers TEU bands, gas LNG/LPG classes. Decide whether to
+  pull that column for these types or derive it from DWT — within the existing
+  families it is a pure step function of DWT (zero monotonicity violations
+  across 18,752 rows), so deriving is defensible and avoids a second vocabulary
+  drifting from the first.
+- **TPC coverage is the real prize.** No public source carries TPC at all; it
+  comes from the ship's hydrostatic tables and only the licensed registers have
+  it. If tanker TPC comes back in this pull, laytime and tonnage work opens up
+  for 43% more of the traffic.
+
+**Needs**: confirmation that 12 fields covers what the other consumers of
+Ships_Register need for these types, and a decision on pulling vs deriving
+`ship_type_group`.
