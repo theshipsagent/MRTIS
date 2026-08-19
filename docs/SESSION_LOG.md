@@ -223,3 +223,133 @@ table for the matched and transformed data with the raw MRTIS event as the spine
 Reviewing `sample_port_calls_6mo.csv`, then extending the Sea-web pull to
 tankers/containers/gas — see **OPEN_QUESTIONS §9**, which has the sizing and the
 upload chunks already prepared.
+
+---
+
+## Session — 2026-08-19 (evening): independent audit #2, port-call assembly layer
+
+**Read-only. Nothing was fixed.** Commissioned as an adversarial audit of
+everything built since audit #1: `git log 13937b9..HEAD`, 13 commits — the whole
+port-call assembly layer plus a session of rulings on top of it.
+
+Method per standing practice: full chain rebuilt (`build_db.py` ->
+`build_fgis_match.py` -> `build_port_calls.py`) in an isolated scratch copy with
+the Zone Reports and `fgis_source/` symlinked read-only. Every claim re-derived
+in SQL from the rebuilt database rather than read out of the build's own
+reporting. Real repo verified byte-identical afterwards (74-file SHA-256
+manifest + `git status`).
+
+Output: `docs/audit/AUDIT_2026-08-19_1746.md` / `.pdf`. Questions routed to
+`OPEN_QUESTIONS.md` §11.
+
+### What held
+
+- **Every count and every dollar reproduces exactly.** 290,436 / 40,170 /
+  41,804; $298,868,500 over 40,245 legs; $349,625,500 over 48,167 departures.
+  Both bases close in closed form from the tier counts with no rounding slack.
+- **All 18 hard guardrails independently re-derived in SQL** — not trusted,
+  rewritten — and all 18 confirmed. Six further invariants the build does not
+  check were tested and also hold.
+- **The build is deterministic**: a cold rebuild reproduced the shipped
+  `PORT_CALL_QUALITY.md` byte-for-byte bar the timestamp.
+- **§8a is exactly right.** `No Cargo` never opens a leg boundary — 0 occurrences
+  across all 1,632 split calls. Verified end to end on a real
+  Discharge -> layberth -> Load call (`9757527-202606191251`, PCS Nitrogen ->
+  Perry Street -> ADM Destrehan): splits on the Discharge/Load boundary, layberth
+  joins leg 1.
+- **The per-departure basis really is untouched by both rulings.** Proved by
+  rebuild, not by inspection: §8 changed it on **0 of 40,170 calls**; §9 changed
+  the fee tier of **0 of 10,211 vessels** (the old register was recovered from
+  git and `agency_fee_for()` re-evaluated under both).
+- **§9's figures are exact**, including the 24 unmatched IMOs verified
+  individually — 13 checksum-invalid, 10 in the source's own
+  `quarantine_pre1980`, 1 (9493523 *Stena Premium*) genuinely absent.
+- **The tonnage rename is complete.** `actual_tons` NULL on all three tables, no
+  code path can write it; `estimated_tons` conserves FGIS tonnage exactly
+  (469,416,219 + 4,381,969 = 473,798,188 t).
+- **Audit #1's open findings do not reach the billing layer.** All 131 Egret
+  workboat rows are *unplaced* — they carry no `Enter`/`Exit`, so no call can
+  open for them. All 5 assembled calls belong to the genuine tanker. The
+  fabricated $98,000 reaches no leg and no call.
+- **The Radcliffe R. Latimer retraction was correct**, for the reason given:
+  `vessel_type_canonical = 'Bulk'` fires on branch 1 of `agency_fee_for()` and
+  `ship_type_group` is never read. $0 impact. (New detail: 7711725 is no longer
+  in the register at all after §9.)
+
+### What did not hold — $6,604,500 mis-stated or unreconciled
+
+None of it is money billed at the wrong *rate*. All of it is labelling,
+reconciliation or reporting.
+
+- **W1 (Medium, $413,000, 54 legs).** Legs reporting `activity = 'No Cargo'`
+  that bill in full. The documented rule — "only a leg with nothing but layberth
+  stops reports No Cargo" — is false: an *unresolved* stop is falsy so it cannot
+  win the label, but `None != 'No Cargo'` is True so it does trigger the fee. The
+  label and the money disagree. 7 such legs also assert a `cargo_group`; 20
+  report the layberth as their berth while billing for work elsewhere.
+- **W2 (Medium, $3,258,500, 313 calls).** "$413,000, unchanged from before this
+  fix" is not like-for-like — §8 changed leg membership (41,985 -> 41,804 legs,
+  1,787 -> 1,632 splits), so that cohort did not exist before. Proved by
+  rebuilding at `c208a67^`. The real §8 movement — $302,127,000 -> $298,868,500
+  — is stated nowhere.
+- **W3 (Medium, $2,933,000).** `agency_fee_departures_total` sums to
+  $346,692,500, not $349,625,500; the 388 fee-bearing unplaced events reach no
+  call. Over-bill reads 17.0% or 16.0% depending on denominator. $98,000 of the
+  gap is audit #1's Egret fee.
+- **W4-W8 (Low).** Backfill lacks its stated guard (inert today, latent
+  $7,000/leg); schema says ~12% over-bill, actual 17.0%; "3 ambiguous FGIS
+  records" is 1 record / 3 lines; `tpc = 0` on 4,045 calls (10.1%) hidden behind
+  "99.7% populated"; §9 silently lost 2 register matches.
+
+### The structural lesson
+
+The 18 guardrails are all **shape** checks — uniqueness, referential integrity,
+set equality, ordering, sum-of-parts. Not one asserts that a *value* is right.
+Two of the six value-level gaps are already failing silently (W1, W3).
+`no cargo is asserted without a source` shows the pattern: it verifies
+`cargo_source` is populated, which is provenance, and passes cleanly on a leg
+asserting `Liquid Bulk` alongside `activity = 'No Cargo'`.
+
+### Also raised this session — new fee tiers, not built
+
+William gave a revised fee schedule at the end of the session
+(Passenger/Cruise $2,500; Ro-Ro/Vehicles Carrier $1,000; Container Fully
+Cellular $750; Refrigerated Cargo Ship $5,000; dry bulk at a General Cargo
+berth $5,000). **Deliberately not implemented** — captured and scoped in
+**OPEN_QUESTIONS §12** for a fresh session.
+
+Indicative impact: **-$26,701,000 (-8.9%)**, $298,868,500 -> $272,167,500.
+R5 (bulk at a General Cargo berth) is 64% of that on its own.
+
+Three things make this more than a table edit, all written up in §12:
+
+- **The names are register `ship_type` values, not `vessel_type_canonical`.**
+  `agency_fee_for()` reads the canonical type first and returns, so as written
+  today these rules would fire on **9 legs out of 4,211** — priority 1 catches
+  the rest. Either the rules move onto the canonical vocabulary (but then
+  Ro-Ro/Vehicles Carrier becomes unexpressible) or the priority order changes.
+- **R5 is the first berth-dependent fee.** Every fee to date is priced by the
+  vessel by explicit design. Which berth decides on a multi-stop leg is a
+  217-leg / $2.28M question on its own.
+- **Three of the six named types have zero traffic** (Ro-Ro Cargo Ship,
+  Vehicles Carrier, Container FC/Ro-Ro Facility). The nearest real thing is
+  `General Cargo Ship (with Ro-Ro facility)` — 5 chargeable legs — and whether
+  it is covered is ambiguous.
+
+Note the ordering risk: audit #2 §5 found there is **no guardrail asserting a
+fee matches its vessel's tier**, so a mistake in this change would not be caught
+by anything. That guardrail should land before the tiers move.
+
+### Next session starts by
+
+Ruling on **OPEN_QUESTIONS §12.3.1** — whether the new fee tiers key off the
+register's raw `ship_type` or the canonical vessel type. Everything else in §12
+depends on it, and the schedule cannot be built until it is settled.
+
+Then **§11.1** from the audit (what a leg should report when it mixes a layberth
+stop with an unresolved working berth — $413,000 across 54 legs labelled
+`No Cargo` while billing in full), and §11.2-11.4, which are cheap once §11.1 is
+settled.
+
+A **third audit** is expected once the §12 fee schedule and the §11 rulings are
+implemented.

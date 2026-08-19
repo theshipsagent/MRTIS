@@ -500,3 +500,285 @@ changing (e.g. an IMO repair merging two records) would move it. This is a
 schema-level change (`sql/schema.sql`, `build_db.py`, and every downstream FK
 in the FGIS and port-call layers) -- needs scoping as its own piece of work,
 not folded into an unrelated fix.
+
+---
+
+## 11. Questions raised by the 2026-08-19 independent audit #2 — OPEN
+
+Raised by `docs/audit/AUDIT_2026-08-19_1746.md`, which audited the port-call
+assembly layer (`git log 13937b9..HEAD`, 13 commits). Each of these needs a
+business ruling; the audit deliberately did not decide any of them.
+
+### 11.1 What should a leg report when it mixes a layberth stop with an unresolved working berth?
+
+**54 legs currently report `activity = 'No Cargo'` and bill $413,000 anyway.**
+
+§8a lets a `No Cargo` stop join the leg in progress. The leg's label then comes
+from `real_acts[0]` — the first stop whose activity is truthy and not
+`No Cargo`. An **unresolved** stop has `activity = None`, which is falsy, so it
+cannot win the label, and `No Cargo` does. But the fee test uses a different
+predicate (`any(st["activity"] != "No Cargo")`), and `None != "No Cargo"` is
+True — so the leg bills.
+
+The result is a leg labelled "no cargo" that charged a full agency fee. The
+berths are real working berths (Chalmette Slip, IMC Faustina, 7th Street, Arabi
+Terminal, IMTT St Rose 14, Blackwater Harvey, Globalplex).
+
+Both statements cannot be right. Which is wrong?
+
+- **(a)** The label. An unresolved stop should outrank `No Cargo`, making these
+  legs report `NULL`/unresolved — honest about not knowing, and consistent with
+  "nothing is guessed".
+- **(b)** The fee. If the leg genuinely did no cargo work anywhere, $413,000
+  should not be billed. (Unlikely — these are working berths — but it is the
+  other way to make the two agree.)
+- **(c)** Neither. Add a separate `billable_activity` so the operational label
+  and the billing predicate stop pretending to be the same thing.
+
+Two knock-on effects of the same code path, which the same ruling should cover:
+
+- **7 `No Cargo` legs assert a `cargo_group`** (`Liquid Bulk` ×6, `Passengers`
+  ×1). `cargo_group` is read from `lg[0]`, the leg's *first* stop; `activity` is
+  read from a possibly different stop.
+- **20 of the 54 report the layberth** (Buck Kreihs, Perry Street, Poland St,
+  Violet Dock 2, Alabo St) as `first_berth_zone`/`facility_type` while billing
+  for work done at another berth.
+
+*Dollars: $413,000 across 54 legs. Rows: 54 legs, 7 with contradictory cargo,
+20 with a misleading berth.*
+
+### 11.2 Should `port_call.agency_fee_departures_total` include unplaced events?
+
+The column exists so the two fee bases "can be compared directly". It does not
+reconcile to the basis it is meant to represent:
+
+| Source | Total |
+|---|---|
+| `fact_zone_event.agency_fee` — the pre-ruling basis | $349,625,500 |
+| `SUM(port_call.agency_fee_departures_total)` | $346,692,500 |
+| **Gap** | **$2,933,000** (388 fee-bearing events on 17,100 unplaced events) |
+
+So the over-billing ratio is 17.0% against `fact_zone_event` and 16.0% against
+the call-level column — two analysts comparing "the two bases" get different
+answers.
+
+Defensible as-is (a call-level column can only hold call-level fees), but then
+the schema comment must say the comparison is *within placed calls only*, and a
+guardrail should assert the gap equals exactly the unplaced fee rather than
+leaving it unmeasured. Note **$98,000 of the gap is audit #1's fabricated
+Egret fee** — the gap carries known bad data, not just coverage loss.
+
+*Dollars: $2,933,000 unreconciled. Not a billing error — a comparability one.*
+
+### 11.3 Should `tpc = 0` be stored as NULL?
+
+`port_call.dwt`/`.tpc` are reported 99.7% populated. But `tpc > 0` on only
+**89.6%** — `tpc = 0` on **4,045 calls (10.1%)**, across 1,130 distinct
+vessels, including **2,582 Bulk calls**, 1,031 Passenger, 116 Container, 99 Gas.
+
+Zero is a legitimate TPC for some small craft and a missing value for a
+Capesize. Any draft-survey calculation dividing by `tpc` breaks on 10% of calls
+with no warning from the coverage headline. Only the register owner can say
+which of the 4,045 are genuinely zero.
+
+Related to, but distinct from, the TPC provenance question already logged in
+`docs/SESSION_LOG.md` (captured-vs-estimated). This one is purely
+zero-encoded-as-null.
+
+### 11.4 Should the 2 berthed-but-unbilled legs bill?
+
+Two legs reached a berth and did non-layberth work but carry no fee, because
+`agency_fee_for()` returns `None` for a vessel with no usable IMO **and** no
+type from either the Zone Report or the register — the "this is a tug, not an
+agented ocean vessel" rule.
+
+Both did berth. If the rule is right, this is correct and no action follows. If
+a berthing vessel is always agented regardless of identity, they are under-billed.
+
+*Dollars at stake: ≤ $21,000.*
+
+### 11.5 Not a question — items for correction without a ruling
+
+Recorded here so they are not lost; none needs a decision:
+
+- `sql/schema_port_call.sql` states summing `port_call_event.agency_fee`
+  "over-bills by ~12%". Actual: **17.0%** ($50,757,000).
+- `docs/PORT_CALL_QUALITY.md:86` says the 54 legs "bill exactly as [they] did
+  before this ruling". They cannot — §8 changed leg membership. The real §8
+  movement is **−$3,258,500 across 313 calls** ($302,127,000 → $298,868,500),
+  which is stated nowhere and should be.
+- `build_db.py:266`'s `ship_type_group` backfill is an unconditional
+  `fillna(ship_type)`, not the "only where the family has no size vocabulary"
+  rule it is documented as. Currently inert (0 blanks in the refreshed
+  register), and it fired 1,349 times legitimately under the old one — but
+  `'Bulk Carrier, Self-discharging, Laker'` starts with `"Bulk Carrier"`, so a
+  future register with blanks in such a family would silently promote vessels to
+  the $10,500 tier. Worth an explicit guard.
+- §9 was recorded as a pure coverage gain (60.9% → 99.4%). Two vessels **lost**
+  their match: 7711725 *Radcliffe R Latimer* and 7633375 *Sunnanvik*, both
+  behind the pre-1980 gate. Billing impact $0 (both are `Bulk` from the Zone
+  Report); they lose only `dwt`/`tpc`.
+- Audit #1's ambiguous FGIS finding is **1 record** (`UNMATCHED-AQUITANIA-20241013`)
+  spanning **3 certificate lines**, not 3 records.
+
+---
+
+## 12. Agency fee — vessel-type and berth-type tiers — PENDING IMPLEMENTATION, William, 2026-08-19
+
+William's instruction, verbatim:
+
+> *"minor change to the fee rules, if vessel type is; Passenger/Cruise use fee
+> $2500; if Ro-Ro Cargo Ship or Vehicles Carrier use fee $1000; if vessel type is
+> Container Ship (Fully Cellular) or Container Ship (Fully Cellular/Ro-Ro
+> Facility) use fee $750; if vessel type is Refrigerated Cargo Ship use fee
+> $5000; last, any dry bulk vessel calling a general cargo facility type, use fee
+> $5000"*
+
+**Not implemented.** Captured here with impact scoped so the next session can
+build it. Nothing in `scripts/` or the database has been changed.
+
+### 12.1 The rules as given
+
+| # | Condition | Fee |
+|---|---|---|
+| R1 | vessel type = `Passenger/Cruise` | $2,500 |
+| R2 | vessel type = `Ro-Ro Cargo Ship` or `Vehicles Carrier` | $1,000 |
+| R3 | vessel type = `Container Ship (Fully Cellular)` or `Container Ship (Fully Cellular/Ro-Ro Facility)` | $750 |
+| R4 | vessel type = `Refrigerated Cargo Ship` | $5,000 |
+| R5 | any **dry bulk vessel** calling a **General Cargo** facility type | $5,000 |
+
+Existing tiers (`Bulk` $10,500 / everything else $3,500) presumably remain the
+fallback — confirm.
+
+### 12.2 Indicative impact — −$26,701,000 (−8.9%)
+
+Measured against the current build (ruling basis, $298,868,500 over 40,245
+chargeable legs). Indicative only: R5's exact scope is undecided (see 12.3.3).
+
+| Rule | Chargeable legs | Bills today | Would bill | Change |
+|---|---|---|---|---|
+| R1 Passenger/Cruise | 1,043 | $3,650,500 | $2,607,500 | **−$1,043,000** |
+| R2 Ro-Ro / Vehicles Carrier | **0** | $0 | $0 | $0 |
+| R3 Container (Fully Cellular) | 3,128 | $10,948,000 | $2,346,000 | **−$8,602,000** |
+| R3 Container (FC/Ro-Ro Facility) | **0** | $0 | $0 | $0 |
+| R4 Refrigerated Cargo Ship | 40 | $140,000 | $200,000 | **+$60,000** |
+| R5 Bulk @ General Cargo berth | 3,112 | $32,676,000 | $15,560,000 | **−$17,116,000** |
+| | | **$298,868,500** | **$272,167,500** | **−$26,701,000** |
+
+R4 is the only increase. R5 alone is 64% of the movement.
+
+### 12.3 Questions that must be answered before this can be built
+
+#### 12.3.1 These are register `ship_type` values, not the canonical vocabulary — so the priority order has to change
+
+`Passenger/Cruise`, `Container Ship (Fully Cellular)`, `Refrigerated Cargo Ship`,
+`Vehicles Carrier` and `Ro-Ro Cargo Ship` are all values of the ships register's
+raw `ship_type` (`ship_type_ref`). They are **not** values of
+`vessel_type_canonical`, which is the 7-value dictionary vocabulary
+(Bulk / Container / Gas / Other / Passenger / Reefer / Tanker).
+
+`agency_fee_for()` reads `vessel_type_canonical` **first** and returns
+immediately. Almost every vessel these rules target already has one:
+
+| Register `ship_type` | `vessel_type_canonical` | Chargeable legs |
+|---|---|---|
+| Container Ship (Fully Cellular) | `Container` | 3,124 |
+| Container Ship (Fully Cellular) | *(none)* | 4 |
+| Passenger/Cruise | `Passenger` | 1,042 |
+| Passenger/Cruise | *(none)* | 1 |
+| Refrigerated Cargo Ship | `Reefer` | 36 |
+| Refrigerated Cargo Ship | *(none)* | 4 |
+
+So **as `agency_fee_for()` is written today, these rules would fire on 9 legs out
+of 4,211** — priority 1 catches the rest first and returns $3,500.
+
+Two ways out; this is the decision:
+
+- **(a)** Express the rules on `vessel_type_canonical` instead —
+  `Passenger` → $2,500, `Container` → $750, `Reefer` → $5,000. Simple, uses the
+  column that is 79% populated from the Zone Report, and needs no register match.
+  But the canonical vocabulary has no way to say `Ro-Ro Cargo Ship` or
+  `Vehicles Carrier` — both collapse into `Other`, so R2 becomes unexpressible.
+- **(b)** Reorder `agency_fee_for()` so the specific register `ship_type` is
+  consulted **before** the canonical type. Expresses every rule exactly as
+  written, but makes the fee depend on a register match — and 63 vessels have no
+  register row at all, plus the 2 lost in §9 (§11.5).
+
+Recommendation to consider: (b) with (a) as the fallback when the register has
+no row — but William should rule.
+
+#### 12.3.2 Three of the six named types have no traffic
+
+`Ro-Ro Cargo Ship`, `Vehicles Carrier` and
+`Container Ship (Fully Cellular/Ro-Ro Facility)` exist in the world register
+(579, 941 and 5 vessels) but **zero of them appear in MRTIS traffic**. R2 and
+half of R3 currently match nothing.
+
+The nearest thing actually in the data is
+**`General Cargo Ship (with Ro-Ro facility)`** — 6 vessels, 5 chargeable legs,
+$52,500 today. **Is that intended to be covered by R2?** It is a Ro-Ro-capable
+ship but a general-cargo hull, so it is genuinely ambiguous. Also present in the
+register but not in traffic: `Container/Ro-Ro Cargo Ship` (11),
+`Rail Vehicles Carrier` (12).
+
+#### 12.3.3 R5 is the first berth-dependent rule, and it needs three sub-decisions
+
+Every fee to date has been priced by the **vessel**, never the berth — the
+choice was made deliberately and is documented in `docs/BUILD.md`
+("it follows the ship being agented rather than the dock it happens to occupy").
+R5 reverses that for one case, which is fine, but it raises questions the
+vessel-only rules never had to answer:
+
+1. **Which berth decides, on a leg with more than one stop?** A leg is a run of
+   berth stops sharing one activity, so it can touch several facilities.
+   - by the leg's **first** berth (`port_call_leg.facility_type`): **3,112 legs,
+     $32,676,000 today**
+   - by **any** stop in the leg being General Cargo: **3,329 legs, $34,954,500**
+
+   A 217-leg / $2.28M difference. The leg's other reported attributes
+   (`first_berth_facility`, `cargo_group`) already come from the first stop —
+   but audit #2 finding W1 shows that convention is itself producing misleading
+   rows, so it should not be adopted here by default.
+
+2. **What is a "dry bulk vessel"?** `vessel_type_canonical = 'Bulk'` (the Zone
+   Report's own Type, 79% populated, what the $10,500 tier uses today), or
+   register `ship_type LIKE 'Bulk Carrier%'`? The figures above use the former.
+
+3. **Does R5 override R1–R4, or only the $10,500 base tier?** As written R5 is
+   "last", which reads as highest precedence. A Bulk vessel cannot also be
+   Passenger/Container/Reefer, so today the rules cannot collide — but the
+   precedence should be stated rather than left to the accident that they are
+   disjoint.
+
+#### 12.3.4 Does this apply to the per-departure comparison basis too?
+
+`fact_zone_event.agency_fee` is built by the same `agency_fee_for()` in
+`build_db.py`. If it changes, the pre-ruling comparison basis ($349,625,500)
+moves too — which audit #2 §A3 confirmed no ruling has done so far. Either is
+defensible:
+
+- **Change both** — the two bases stay comparable, but the "pre-ruling basis"
+  stops being a fixed historical benchmark.
+- **Change the leg basis only** — the benchmark is preserved, but the two bases
+  then differ by pricing *and* by counting rule, and the 17.0% over-bill figure
+  becomes a mixture of two effects rather than one.
+
+Note R5 cannot be expressed on `fact_zone_event` in the same way regardless: that
+table charges per *departure*, and a departure has exactly one berth, so
+"the leg's berth" has no meaning there.
+
+#### 12.3.5 Confirm R4 is an increase
+
+`Refrigerated Cargo Ship` moves **$3,500 → $5,000**, the only rule that raises a
+fee. 40 legs, +$60,000. Flagged only because every other rule cuts.
+
+### 12.4 Suggested build order for the next session
+
+1. Rule 12.3.1 (which column the rules key off) — everything else depends on it.
+2. Rule 12.3.3 (R5's three sub-decisions).
+3. Rule 12.3.4 (one basis or both).
+4. Implement in `agency_fee_for()`; the tier table should move out of the
+   function body into a declared mapping, since it is now six rules rather than two.
+5. **Add the value-level guardrails audit #2 §5 found missing before changing the
+   tiers** — there is currently no check that a fee matches its vessel's tier, so
+   a mistake in this change would not be caught by any guardrail.

@@ -5,6 +5,61 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — independent audit #2, port-call assembly layer (2026-08-19)
+
+- **`docs/audit/AUDIT_2026-08-19_1746.md` / `.pdf`** — adversarial, read-only
+  audit of `git log 13937b9..HEAD` (13 commits): the whole port-call assembly
+  layer plus the rulings built on it. Full chain rebuilt in an isolated scratch
+  copy; every claim re-derived in SQL rather than read out of the build's own
+  reporting. Real repo verified byte-identical afterwards (74-file SHA-256
+  manifest + `git status`). **Nothing was fixed.**
+- **Confirmed (14):** all row counts, both fee bases to the dollar
+  ($298,868,500 / 40,245 legs; $349,625,500 / 48,167 departures), all 18 hard
+  guardrails independently re-derived, §8a's split behaviour, §9's coverage
+  figures and its 24 unmatched IMOs verified individually, the `actual_tons`
+  rename, and the Radcliffe R. Latimer retraction. The build is deterministic —
+  a cold rebuild reproduced `PORT_CALL_QUALITY.md` byte-for-byte.
+- **Proved by rebuild, not inspection:** the per-departure basis is untouched by
+  both rulings — §8 changed it on 0 of 40,170 calls; §9 changed the fee tier of
+  0 of 10,211 vessels.
+- **Audit #1's open findings do not reach the billing layer:** all 131 Egret
+  workboat rows are unplaced (no `Enter`/`Exit`, so no call can open), and the
+  fabricated $98,000 reaches no leg.
+- **Wrong (8), $6,604,500 mis-stated or unreconciled** — none of it a wrong
+  *rate*; all labelling, reconciliation or reporting:
+  - **W1** 54 legs report `activity = 'No Cargo'` and bill $413,000 anyway. The
+    documented rule is false — an *unresolved* stop cannot win the label but does
+    trigger the fee. 7 also assert a `cargo_group`; 20 report the layberth as
+    their berth.
+  - **W2** "unchanged from before this fix" is not like-for-like — §8 changed leg
+    membership. The real §8 movement, stated nowhere, is **-$3,258,500 across
+    313 calls**.
+  - **W3** `agency_fee_departures_total` sums to $346,692,500, not $349,625,500
+    — 388 fee-bearing unplaced events, **$2,933,000**, unguarded.
+  - **W4-W8** backfill lacks its stated guard (inert today, latent $7,000/leg);
+    schema says ~12% over-bill, actual 17.0%; "3 ambiguous FGIS records" is 1
+    record / 3 lines; `tpc = 0` on 4,045 calls (10.1%) behind a "99.7% populated"
+    headline; §9 silently lost 2 register matches.
+- **Structural finding:** all 18 guardrails are *shape* checks — none asserts a
+  value is right. Two of six value-level gaps are already failing silently.
+
+### Added — `OPEN_QUESTIONS.md` §11 and §12 (2026-08-19)
+
+- **§11** — four business rulings raised by audit #2 (leg label vs fee on mixed
+  layberth legs; whether the comparison column should include unplaced events;
+  `tpc = 0` as null; two berthed-but-unbilled legs), plus five
+  corrections-without-a-ruling.
+- **§12** — William's revised fee schedule (Passenger/Cruise $2,500; Ro-Ro /
+  Vehicles Carrier $1,000; Container Fully Cellular $750; Refrigerated Cargo Ship
+  $5,000; dry bulk at a General Cargo berth $5,000), **captured and scoped but
+  deliberately not implemented**. Indicative impact **-$26,701,000 (-8.9%)**.
+  Blocked on three decisions: the named types are register `ship_type` values,
+  not `vessel_type_canonical`, so as written today the rules would fire on 9 legs
+  out of 4,211; R5 is the first berth-dependent fee ever (a 217-leg / $2.28M
+  question on which berth decides); and three of the six named types have zero
+  traffic in MRTIS.
+
+
 ### Changed — ships register refreshed to the full world-fleet pull (2026-08-19)
 
 - **`dictionaries/ships_register_fleet.csv` refreshed** from the
