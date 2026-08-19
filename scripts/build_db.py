@@ -461,9 +461,19 @@ def write_db(db_path, schema_sql_path, dim_vessel, dim_agent, dim_zone, fact_zon
     # it silently pointing at keys that have moved -- re-run
     # scripts/build_fgis_match.py afterwards to rebuild it. fgis_raw/
     # fgis_output are untouched: they key off FGIS's own data, not ours.
+    #
+    # The port call assembly layer is built off the same keys and is dropped for
+    # exactly the same reason -- a stale port_call_event pointing at reassigned
+    # event_keys would look fine and be wrong in every row.
     had_fgis_match = con.execute(
         "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'fgis_record'"
     ).fetchone()[0] > 0
+    had_port_calls = con.execute(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'port_call'"
+    ).fetchone()[0] > 0
+    con.execute("DROP TABLE IF EXISTS port_call_event")
+    con.execute("DROP TABLE IF EXISTS port_call_leg")
+    con.execute("DROP TABLE IF EXISTS port_call")
     con.execute("DROP TABLE IF EXISTS fgis_record_line")
     con.execute("DROP TABLE IF EXISTS fgis_record")
 
@@ -698,10 +708,13 @@ def main():
                  fact_zone_event, dim_vessel_name_alias)
     print(f"Wrote data quality report: {args.report_path}")
 
-    if had_fgis_match:
-        print("\nNOTE: the FGIS match layer (fgis_record/fgis_record_line) was dropped -- "
-              "this rebuild reassigned event_key/vessel_key values.\n"
-              "      Re-run: python3 scripts/build_fgis_match.py")
+    if had_fgis_match or had_port_calls:
+        print("\nNOTE: layers built on event_key/vessel_key were dropped -- this rebuild "
+              "reassigned those keys.")
+        if had_fgis_match:
+            print("      Re-run: python3 scripts/build_fgis_match.py   (FGIS cross-reference)")
+        if had_port_calls:
+            print("      Re-run: python3 scripts/build_port_calls.py   (port call assembly)")
 
 
 if __name__ == "__main__":

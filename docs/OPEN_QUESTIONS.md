@@ -212,6 +212,19 @@ have more than one leg:
 
 1,415 legs never reached a berth and are excluded — no cargo work, no fee.
 
+**IMPLEMENTED 2026-08-19** in `scripts/build_port_calls.py`:
+`port_call_leg.agency_fee` is one fee per leg that reached a berth, and
+`port_call.agency_fee_total` is the sum of its legs. Both are guarded (no fee on
+a leg that never berthed; call total equals its legs). The pre-ruling
+per-departure figure is preserved unchanged on `port_call_event.agency_fee` and
+`*_departures*` columns so the two bases stay directly comparable.
+
+The built figure is **$309,018,500 over 41,821 legs**, $133,000 above the
+$308,885,500 estimated above because the build prices through
+`build_db.py::agency_fee_for()`, which also falls back to the ships register for
+a blank-type vessel -- follow-up 4 below, resolved in favour of the register
+fallback so the two layers price identically.
+
 #### 7.1a Follow-ups this ruling opens
 
 1. **$308,885,500 is a floor, not the answer.** 5,377 chargeable legs (12.9%)

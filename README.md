@@ -7,7 +7,8 @@ vessel, agent, and zone, from 2019 through the present.
 For the full story on *why* this exists and how it's meant to grow, see
 [docs/WHITEPAPER.md](docs/WHITEPAPER.md). For how the pipeline actually works,
 see [docs/BUILD.md](docs/BUILD.md). For the health of the most recent build,
-see [docs/DATA_QUALITY.md](docs/DATA_QUALITY.md).
+see [docs/DATA_QUALITY.md](docs/DATA_QUALITY.md). For how raw events become
+port calls, see [docs/PORT_CALL_SPEC.md](docs/PORT_CALL_SPEC.md).
 
 ## Quickstart
 
@@ -16,12 +17,25 @@ pip install -r requirements.txt
 
 # Build (or rebuild) the database from every "Zone Report*.csv" file in this folder
 python3 scripts/build_db.py
+
+# Assemble those events into port calls (run after build_db.py, and after
+# scripts/build_fgis_match.py if you want cargo attached)
+python3 scripts/build_port_calls.py
 ```
 
-This produces `data/db/mrtis.duckdb` and refreshes `docs/DATA_QUALITY.md`.
+The first produces `data/db/mrtis.duckdb` and refreshes `docs/DATA_QUALITY.md`;
+the second produces the `port_call` / `port_call_leg` / `port_call_event`
+tables and `docs/PORT_CALL_QUALITY.md`.
+
 Drop new Zone Report CSV exports into this folder at any time and re-run the
-same command -- the build is idempotent and always reflects exactly what's on
-disk.
+same commands -- the build is idempotent and always reflects exactly what's on
+disk. `build_db.py` reassigns surrogate keys, so it drops the FGIS and port call
+layers and tells you to re-run them.
+
+`port_call_event` is the table to query for analysis: one row per raw event,
+source values preserved alongside the canonical ones, assembled into port calls
+and legs with activity, cargo, agency and waiting time attached. See
+[docs/PORT_CALL_SPEC.md](docs/PORT_CALL_SPEC.md).
 
 ### Querying the database
 
@@ -52,12 +66,17 @@ MRTIS/
 ├── docs/
 │   ├── WHITEPAPER.md        -- purpose, methodology, design rationale, roadmap
 │   ├── BUILD.md             -- pipeline internals, schema, how to extend
+│   ├── PORT_CALL_SPEC.md    -- port call assembly rules, and what a guardrail is
+│   ├── PORT_CALL_QUALITY.md -- auto-generated report from the assembly
 │   └── DATA_QUALITY.md      -- auto-generated report from the most recent build
 ├── sql/
-│   └── schema.sql           -- DuckDB DDL for dim_vessel, dim_agent, dim_zone, fact_zone_event
+│   ├── schema.sql           -- DuckDB DDL for dim_vessel, dim_agent, dim_zone, fact_zone_event
+│   └── schema_port_call.sql -- DDL for port_call, port_call_leg, port_call_event
 ├── scripts/
 │   ├── build_db.py          -- main entrypoint: ingest -> transform -> load
-│   └── lib/parse.py         -- field-parsing helpers (draft, mile, IMO, zone classification)
+│   ├── build_port_calls.py  -- assemble events into port calls and legs
+│   ├── lib/parse.py         -- field-parsing helpers (draft, mile, IMO, zone classification)
+│   └── lib/guardrails.py    -- the hard/soft check framework the builds run on themselves
 ├── data/
 │   └── db/mrtis.duckdb      -- built database (not versioned, regenerable)
 └── skills/

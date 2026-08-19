@@ -63,6 +63,68 @@ follows [Keep a Changelog](https://keepachangelog.com/).
   `docs/OPEN_QUESTIONS.md` §7.
 
 
+### Added — port call assembly (2026-08-19)
+
+- **Port call assembly layer** (`scripts/build_port_calls.py`,
+  `sql/schema_port_call.sql`, `docs/PORT_CALL_SPEC.md`) -- the zone-event feed
+  assembled into voyages. Three tables: `port_call_event` (**the deliverable**:
+  one row per `fact_zone_event`, source values preserved in `src_*` columns
+  alongside every canonical/derived one), `port_call` (Enter SWP .. Exit SWP)
+  and `port_call_leg`. 40,170 calls, 43,238 legs, 98.8% of calls complete at
+  both ends.
+  - **Activity** (Load / Discharge / No Cargo) resolved by evidence order --
+    draft delta (76.1% of legs), then an FGIS certificate (3.5%), then the zone
+    dictionary's `ops` (4.7%); unresolved otherwise, never guessed.
+    `activity_method` records which rung answered. 84.3% resolved.
+  - **Split calls** -- a new leg starts only where the activity changes, so two
+    Load berths in a row stay one leg but discharge-then-load splits. 7.2% of
+    calls. Verified against the Ultra Leopard SOFs: iron ore discharge at Nucor
+    (48->23 ft), eleven days at anchor, soybeans for China at ADM Reserve
+    (25->45 ft).
+  - **Agency normalization per leg** -- the agency that brought the vessel in
+    owns the leg (`agency_leg`), which fills the 2.4% blank agents and undoes
+    the pilot-sheet artefact where an outbound agent lands on a sailing another
+    agency worked, while a genuine split call still keeps two agencies.
+  - **Waiting time** is anchorage dwell before the leg's berth arrival only,
+    attributed by interval overlap -- the pilot sheets leave anchorages open
+    after the vessel is alongside (90 legs), and counting that whole dwell would
+    double-count cargo time (Amanda C: 332 raw hours, 117.6 genuinely waiting).
+  - Cargo, destination and certified tonnage attach from FGIS per leg; DWT/TPC
+    from the ships register. Shipper/Consignee/Receiver/ports/Est Tons are
+    deliberately absent until a source exists.
+- **Build guardrails** (`scripts/lib/guardrails.py`) -- HARD invariants abort the
+  build before anything is written (spine completeness, referential integrity,
+  fee and FGIS-tonnage reconciliation, no activity without a named method,
+  schema/frame column alignment, single transaction); SOFT checks report source
+  health without blocking. This caught a real bug on its first run: 13 berth
+  stops carry grain certificates on both the arrival and the sailing, and the
+  code was keeping one and dropping the other (128 certificates, 4.4 Mt).
+  Nothing was written until it was fixed.
+- `build_db.py` now drops the port call layer alongside the FGIS layer on
+  rebuild, for the same reason -- both key off row-index surrogate keys -- and
+  names both scripts to re-run.
+- **Open for William**: `--min-draft-delta` defaults to 1 ft (trust the source
+  as recorded). At +-1 ft the evidence is a coin toss -- it agrees with the zone
+  dictionary 35 times and contradicts it 29. Raising it to 2 ft costs 4.5 points
+  of resolved activity and removes ~340 split calls. Also 707 legs where the
+  draft contradicts the dictionary's `ops`: the draft wins (531 sail a median
+  14 ft lighter from Load-only berths, mostly ADM Destrehan Buoys -- a
+  20,000-tonne discharge, not noise), so the dictionary needs correcting.
+- **William's agency-fee ruling implemented on this layer** (OPEN_QUESTIONS
+  §7.1): the billing unit is the leg. `port_call_leg.agency_fee` is one fee per
+  leg that reached a berth, priced through `build_db.py::agency_fee_for()` so
+  both layers use one definition of the rate; `port_call.agency_fee_total` sums
+  its legs. **$309,018,500 over 41,821 chargeable legs**, against $349,625,500
+  over 48,167 berth departures on the pre-ruling basis -- **-$40,607,000
+  (-11.6%)**. The $133,000 above the §7.1 estimate is the ships-register
+  fallback for blank-type vessels (§7.1a follow-up 4), which keeps the two
+  layers pricing identically. The per-departure figure is preserved unchanged on
+  `port_call_event.agency_fee` and the `*_departures*` columns and reconciled by
+  a hard guardrail, so the two bases stay comparable row by row.
+- Still open on the fee: whether the 239 `No Cargo` legs ($2,061,500) should
+  accrue, and that $309.0M is a **floor** -- 5,375 chargeable legs have an
+  unresolved activity, and the split rule never lets an unknown invent a split.
+
 ### Added
 - **Agency fee refinements**: where the Zone Report never recorded a Type,
   the rate falls back to the ships register (`ship_type_group LIKE

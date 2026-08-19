@@ -28,12 +28,13 @@ Runs the project's own build pipeline (`scripts/build_db.py`) against every
 This is idempotent and safe to run repeatedly. It never modifies or deletes
 the source CSVs.
 
-**Rebuilding invalidates the FGIS cross-reference.** `event_key` and
-`vessel_key` are assigned by row index, so a rebuild reassigns them and any
-existing FGIS link would end up pointing at the wrong rows. `build_db.py`
-therefore drops the FGIS match layer (`fgis_record`, `fgis_record_line`)
-rather than leaving it silently wrong, and prints a reminder. Re-run
-`scripts/build_fgis_match.py` afterwards to restore it -- step 4 below.
+**Rebuilding invalidates every layer built on top of the core tables.**
+`event_key` and `vessel_key` are assigned by row index, so a rebuild reassigns
+them and any existing link would end up pointing at the wrong rows.
+`build_db.py` therefore drops both downstream layers -- the FGIS match
+(`fgis_record`, `fgis_record_line`) and the port call assembly (`port_call`,
+`port_call_leg`, `port_call_event`) -- rather than leaving them silently wrong,
+and prints a reminder naming what to re-run. Steps 4 and 5 below restore them.
 
 ## Steps
 
@@ -53,12 +54,20 @@ rather than leaving it silently wrong, and prints a reminder. Re-run
    ```
    Only re-run `scripts/build_fgis.py` as well if the user also wants fresh
    FGIS data pulled from USDA (it updates weekly, on Thursdays).
-5. Read the command output and the regenerated `docs/DATA_QUALITY.md`.
+5. Rebuild the port call assembly -- also fast, also no network:
+   ```bash
+   python3 scripts/build_port_calls.py
+   ```
+   This one refuses to write anything if a hard guardrail fails, so a
+   non-zero exit means the output was rejected, not half-written. Read
+   `docs/PORT_CALL_QUALITY.md` for the result.
+
+6. Read the command output and the regenerated `docs/DATA_QUALITY.md`.
    Report back to the user in plain language: how many source files were
    processed, how many events/vessels/agents/zones resulted, and flag
    anything that changed meaningfully from before (e.g. a sudden spike in
    blank agents or duplicate rows) as it may indicate a malformed export.
-6. If the user has git set up for this project, remind them the change to
+7. If the user has git set up for this project, remind them the change to
    `docs/DATA_QUALITY.md` (and any code changes) is worth a commit -- but do
    not commit or push on their behalf unless they ask.
 
