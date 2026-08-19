@@ -88,8 +88,29 @@ The build script simply reads every CSV in the source folder and unions them.
      from `classify_zone_group()` -- string-pattern matching, not an
      authoritative taxonomy. Override individual rows post-load if you have
      better ground truth.
+   - `dim_zone.facility_type`: the authoritative classification from
+     `dictionaries/zone_facility.csv` (Elevator / Mid-Stream / Bulk Cargo /
+     General Cargo / Tank Storage / Chemical Plant / Refinery / Anchorage /
+     Pilot Station / Cruise / LNG). Prefer this over the heuristic
+     `zone_group` beside it.
    - `fact_zone_event`: one row per source event, joined to the three
      dimensions via surrogate keys.
+   - `fact_zone_event.agency_fee`: the agency fee in USD, accrued on
+     **sailing from a facility berth** — `action = 'Depart'` at any zone whose
+     `facility_type` is not `Anchorage` or `Pilot Station`. NULL everywhere
+     else, so `SUM(agency_fee)` over any slice is the fee earned on it with no
+     extra filtering. The rate is driven by the **vessel, not the berth**:
+     `vessel_type_canonical = 'Bulk'` → $10,500, everything else → $3,500.
+
+     Vessel-based was chosen over berth-based after measuring both: it covers
+     90.5% of berth departures against 82.1% for facility-based (which misses
+     every General Cargo berth), and it follows the ship being agented rather
+     than the dock it happens to occupy. The two bases disagree on 487
+     departures — mostly bulk carriers at chemical-plant and tank-storage
+     berths — and the vessel wins those. The `$3,500` tier is a catch-all
+     covering tanker, gas, container, cruise, reefer and blank-type vessels;
+     see the caveat in `docs/DATA_QUALITY.md` about charging *unknown* as
+     non-bulk.
 4. **Write** -- `DROP`/recreate all four tables in `data/db/mrtis.duckdb`
    from `sql/schema.sql`, then load the built DataFrames.
 5. **Report** -- write `docs/DATA_QUALITY.md` with row counts, date range,

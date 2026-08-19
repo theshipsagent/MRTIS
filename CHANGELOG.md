@@ -6,6 +6,20 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **`fact_zone_event.agency_fee`** -- agency fee in USD accrued on sailing
+  from a facility berth (`action='Depart'` at any zone whose `facility_type`
+  is not Anchorage or Pilot Station); NULL elsewhere, so `SUM(agency_fee)`
+  over any slice is the fee earned on it. Rate is driven by the **vessel, not
+  the berth** (William, 2026-08-19): `vessel_type_canonical='Bulk'` ->
+  $10,500, everything else -> $3,500. Chosen after measuring both bases:
+  vessel covers 90.5% of berth departures vs 82.1% for facility-based, which
+  misses all 7,350 General Cargo departures. The two disagree on 487
+  departures (mostly bulk carriers at chemical-plant/tank-storage berths);
+  the vessel wins. 48,301 chargeable sailings, ~$350M across 2019-2026.
+- **`dim_zone.facility_type`** -- the authoritative zone classification from
+  `dictionaries/zone_facility.csv`, alongside the existing heuristic
+  `zone_group`. That dictionary had been read only by the FGIS matcher; it is
+  now materialised in the warehouse.
 - **FGIS matching, consolidation, and cross-reference**
   (`scripts/build_fgis_match.py`, `sql/schema_fgis_match.sql`) -- the third
   and final FGIS stage, implementing `docs/FGIS_MATCH_SPEC.md`. Resolves
@@ -61,6 +75,14 @@ follows [Keep a Changelog](https://keepachangelog.com/).
   skipped, and known type conflicts blocked -- so genuinely different vessels
   sharing a name are never merged (both `Aquitania`s, and `Sea Voyager` with
   two valid twins, correctly stay separate).
+- **136 fact rows were orphaned from `dim_vessel` with a NULL `vessel_key`.**
+  Introduced when vessel identity was rewired onto the repaired IMO:
+  `bool(nan)` is True, so an unguarded truth test let NaN become the natural
+  vessel key, and `groupby()` silently drops NaN keys -- those rows never
+  produced a dim_vessel entry and joined to nothing. Surfaced by the
+  agency-fee work, where an inner join and a left join disagreed by exactly
+  136 rows. Fixed with an `isinstance` guard; `dim_vessel` gained 58 real
+  vessels and every fact row now joins cleanly to all three dimensions.
 - **NaN truthiness bug in the IMO type-conflict guard.** `bool(nan)` is True
   and `nan != 'Bulk'` is also True, so a *missing* vessel type masqueraded as
   a known-conflicting one and silently blocked 12 legitimate merges. Only
@@ -134,24 +156,6 @@ follows [Keep a Changelog](https://keepachangelog.com/).
   for exclusion from analytics).
 
 ### Fixed
-- **Corrupted IMOs no longer fork one vessel into two.** `canonical_imo()`
-  accepted any 7-digit string without validating the IMO check digit, so a
-  mistyped IMO created a phantom vessel that stole events from the real one.
-  `Spring Aura` 9991064 (invalid) held two events from the middle of
-  9991082's single continuous Zen-Noh loading, making one ship look like two
-  at the same elevator on the same day -- which is what surfaced it. Added
-  `parse.imo_check_digit_valid()` and `parse.build_imo_repair_map()`: where an
-  invalid IMO has exactly one same-name check-digit-valid twin, they merge.
-  31 repairs across 256 rows; resolved 2 of the 3 ambiguous FGIS cases.
-  Guarded three ways -- exactly one valid twin required, dredge-list names
-  skipped, and known type conflicts blocked -- so genuinely different vessels
-  sharing a name are never merged (both `Aquitania`s, and `Sea Voyager` with
-  two valid twins, correctly stay separate).
-- **NaN truthiness bug in the IMO type-conflict guard.** `bool(nan)` is True
-  and `nan != 'Bulk'` is also True, so a *missing* vessel type masqueraded as
-  a known-conflicting one and silently blocked 12 legitimate merges. Only
-  appeared once dredge filtering changed pandas' dtype inference for that
-  column.
 - **IMO cleanup rule corrected**: canonical IMO is now the first 7 digits
   of the raw value for any raw value of 7+ digits (previously only exact
   7-digit raw values were accepted; 8/9-digit values were incorrectly

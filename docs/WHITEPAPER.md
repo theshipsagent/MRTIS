@@ -112,6 +112,11 @@ full reproducibility without bloating git history with data.
   in (see `docs/BUILD.md` "Extending the schema").
 - **Congestion / capacity signal**: concurrent vessel counts by zone over
   time.
+- **Agency fee accrual**: `fact_zone_event.agency_fee` prices every sailing
+  from a facility berth ($10,500 for bulk carriers, $3,500 for everything
+  else), so revenue by agent, berth, vessel type or period is a single
+  `SUM()` away. ~48,300 chargeable sailings and ~$350M across 2019-2026,
+  running a steady ~$45M/year.
 
 ## 6. Roadmap
 

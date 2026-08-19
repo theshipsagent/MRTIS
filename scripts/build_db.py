@@ -38,6 +38,20 @@ from lib.parse import (
 )
 
 RAW_COLUMNS = ["IMO", "Name", "Action", "Time", "Zone", "Agent", "Type", "Draft", "Mile"]
+
+# Agency fee in USD, accrued on sailing (Depart) from a facility berth.
+# Driven by the vessel, not the berth -- confirmed by William 2026-08-19 after
+# comparing coverage: vessel-based reaches 90.5% of berth departures against
+# 82.1% for berth-based, and follows the ship being agented rather than the
+# dock. Bulk carriers are the higher tier; everything else (tanker, gas,
+# container, cruise, reefer, and vessels with no recorded type) is the lower.
+AGENCY_FEE_BULK = 10_500.0
+AGENCY_FEE_OTHER = 3_500.0
+
+# Facility types that are NOT a berth -- a vessel departing these has not
+# worked cargo, so no agency fee accrues. Everything else in the zone
+# dictionary is a real berth of some kind.
+NON_BERTH_FACILITY_TYPES = {"Anchorage", "Pilot Station"}
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
@@ -64,6 +78,20 @@ def load_raw(files):
         df["source_file"] = os.path.basename(f)
         frames.append(df[RAW_COLUMNS + ["source_file"]])
     return pd.concat(frames, ignore_index=True)
+
+
+def load_zone_facility(path):
+    """raw zone name -> facility_type, from William's hand-built zone
+    dictionary. Authoritative, unlike the classify_zone_group() heuristic.
+    Returns {} if absent so the build still runs without it."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, newline="") as f:
+        return {
+            r["raw_zone"].strip(): r["facility_type"].strip()
+            for r in csv.DictReader(f)
+            if r.get("raw_zone", "").strip() and r.get("facility_type", "").strip()
+        }
 
 
 def load_dredge_exclusions(path):
@@ -145,11 +173,18 @@ def transform(raw: pd.DataFrame, vessel_type_map: dict = None, dredge_exclusions
         excluded_names=dredge_names,
     )
     repaired_rows = int(df["imo_canonical"].isin(imo_repair).sum())
-    df["imo_canonical"] = df["imo_canonical"].map(lambda i: imo_repair.get(i, i) if i else i)
+    df["imo_canonical"] = df["imo_canonical"].map(
+        lambda i: imo_repair.get(i, i) if isinstance(i, str) and i else i
+    )
     df = df.drop(columns=["_canon_type"])
 
+    # NB: guard with isinstance, not truthiness. pandas hands NaN through for
+    # missing values, and bool(nan) is True -- an unguarded truth test lets NaN
+    # become the vessel key, which groupby() then silently DROPS, orphaning
+    # those rows from dim_vessel with a NULL vessel_key.
     df["natural_vessel_key"] = df.apply(
-        lambda r: r["imo_canonical"] if r["imo_canonical"]
+        lambda r: r["imo_canonical"]
+        if isinstance(r["imo_canonical"], str) and r["imo_canonical"]
         else "NONAME:" + (r["vessel_name"] or "").strip().upper(),
         axis=1,
     )
@@ -211,7 +246,7 @@ def load_vessel_type_dict(path):
 
 
 def build_dims_and_fact(df: pd.DataFrame, ships_register: pd.DataFrame,
-                        vessel_type_map: dict):
+                        vessel_type_map: dict, zone_facility: dict = None):
     # --- dim_vessel ---
     vessel_groups = df.groupby("natural_vessel_key")
     vessel_rows = []
@@ -272,10 +307,12 @@ def build_dims_and_fact(df: pd.DataFrame, ships_register: pd.DataFrame,
 
     # --- dim_zone ---
     zone_names = sorted(df["zone_name"].dropna().unique())
+    zone_facility = zone_facility or {}
     dim_zone = pd.DataFrame(
         {
             "zone_name": zone_names,
             "zone_group": [classify_zone_group(z) for z in zone_names],
+            "facility_type": [zone_facility.get(z) for z in zone_names],
         }
     ).reset_index(drop=True)
     dim_zone.insert(0, "zone_key", dim_zone.index + 1)
@@ -290,7 +327,28 @@ def build_dims_and_fact(df: pd.DataFrame, ships_register: pd.DataFrame,
     fact = fact.merge(
         dim_agent[["agent_key", "agent_name"]], on="agent_name", how="left"
     )
-    fact = fact.merge(dim_zone[["zone_key", "zone_name"]], on="zone_name", how="left")
+    fact = fact.merge(
+        dim_zone[["zone_key", "zone_name", "facility_type"]], on="zone_name", how="left"
+    )
+    fact = fact.merge(
+        dim_vessel[["vessel_key", "vessel_type_canonical"]], on="vessel_key", how="left"
+    )
+
+    # --- agency fee ---
+    # Accrues on SAILING from a facility berth only. NULL elsewhere (arrivals,
+    # anchorage/pilot-station departures) so SUM(agency_fee) over any slice is
+    # the fee earned on it without further filtering.
+    is_berth_sailing = (
+        (fact["action"] == "Depart")
+        & fact["facility_type"].notna()
+        & ~fact["facility_type"].isin(NON_BERTH_FACILITY_TYPES)
+    )
+    fact["agency_fee"] = pd.Series(
+        [AGENCY_FEE_BULK if t == "Bulk" else AGENCY_FEE_OTHER
+         for t in fact["vessel_type_canonical"]],
+        index=fact.index,
+    ).where(is_berth_sailing)
+
     fact = fact.reset_index(drop=True)
     fact.insert(0, "event_key", fact.index + 1)
     fact_cols = [
@@ -304,6 +362,7 @@ def build_dims_and_fact(df: pd.DataFrame, ships_register: pd.DataFrame,
         "draft_ft",
         "mile_marker",
         "source_file",
+        "agency_fee",
     ]
     fact_zone_event = fact[fact_cols]
 
@@ -391,12 +450,12 @@ def write_db(db_path, schema_sql_path, dim_vessel, dim_agent, dim_zone, fact_zon
         "INSERT INTO dim_agent SELECT agent_key, agent_name, first_seen, last_seen FROM dim_agent_df"
     )
     con.register("dim_zone_df", dim_zone)
-    con.execute("INSERT INTO dim_zone SELECT zone_key, zone_name, zone_group FROM dim_zone_df")
+    con.execute("INSERT INTO dim_zone SELECT zone_key, zone_name, zone_group, facility_type FROM dim_zone_df")
     con.register("fact_df", fact_zone_event)
     con.execute(
         "INSERT INTO fact_zone_event SELECT event_key, vessel_key, agent_key, zone_key, "
         "action, event_time, vessel_type, draft_ft, mile_marker, source_file, "
-        "NULL AS fgis_record_id, NULL AS fgis_record_count FROM fact_df"
+        "NULL AS fgis_record_id, NULL AS fgis_record_count, agency_fee FROM fact_df"
     )
     con.register("alias_df", dim_vessel_name_alias)
     con.execute(
@@ -409,6 +468,7 @@ def write_db(db_path, schema_sql_path, dim_vessel, dim_agent, dim_zone, fact_zon
 
 def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fact_zone_event,
                  dim_vessel_name_alias):
+    fee = fact_zone_event[fact_zone_event["agency_fee"].notna()]
     n_vessels = len(dim_vessel)
     n_invalid_imo = (~dim_vessel["imo_valid"]).sum()
     n_agents = len(dim_agent)
@@ -472,6 +532,39 @@ def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fac
         "`scripts/lib/parse.py::classify_zone_group`), not an authoritative taxonomy. Treat it as "
         "a starting point for rollups, not ground truth.",
         "",
+        "## Agency fees",
+        "",
+        f"- Chargeable sailings (a `Depart` from a facility berth -- not an anchorage "
+        f"or pilot station): {len(fee):,}",
+        f"- Total agency fees accrued: ${fee['agency_fee'].sum():,.0f}",
+        "- Rate is set by the **vessel**, not the berth: "
+        f"`vessel_type_canonical = 'Bulk'` -> ${AGENCY_FEE_BULK:,.0f}, everything else "
+        f"-> ${AGENCY_FEE_OTHER:,.0f}. Vessel-based was chosen over berth-based on "
+        "coverage (90.5% vs 82.1% of berth departures before the catch-all tier) and "
+        "because it follows the ship being agented rather than the dock.",
+        "",
+        "| Vessel type | Rate | Sailings | Fees |",
+        "|---|---|---|---|",
+    ]
+    _by_type = (
+        fee.merge(dim_vessel[["vessel_key", "vessel_type_canonical"]], on="vessel_key", how="left")
+        .assign(vt=lambda d: d["vessel_type_canonical"].fillna("(no type recorded)"))
+        .groupby("vt")["agency_fee"].agg(["count", "sum"])
+        .sort_values("sum", ascending=False)
+    )
+    for vt, row in _by_type.iterrows():
+        lines.append(f"| {vt} | ${row['count'] and fee['agency_fee'].max() if False else ''}"
+                     f"{AGENCY_FEE_BULK if vt == 'Bulk' else AGENCY_FEE_OTHER:,.0f} "
+                     f"| {int(row['count']):,} | ${row['sum']:,.0f} |")
+    lines += [
+        "",
+        "- **Caveat**: the catch-all tier absorbs every vessel type that is neither "
+        "bulk nor liquid -- container, cruise/passenger, reefer -- plus "
+        f"{int(_by_type.loc['(no type recorded)', 'count']) if '(no type recorded)' in _by_type.index else 0:,} "
+        "sailings whose source `Type` was blank. Charging an *unknown* type as "
+        "non-bulk is a decision, not a fact; revisit if those vessels turn out to be "
+        "predominantly bulk carriers.",
+        "",
         "## Ships register enrichment",
         "",
         f"- {n_valid_imo_vessels:,} of {n_vessels:,} vessels ({n_valid_imo_vessels / n_vessels:.1%}) have a "
@@ -496,6 +589,7 @@ def main():
     ap.add_argument("--ships-register-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "ships_register_fleet.csv"))
     ap.add_argument("--vessel-type-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "vessel_type.csv"))
     ap.add_argument("--dredge-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "dredge_exclusions.csv"))
+    ap.add_argument("--zone-facility-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "zone_facility.csv"))
     ap.add_argument("--keep-dredges", action="store_true",
                     help="Keep vessels marked exclude_as_dredge=Y instead of filtering them out")
     args = ap.parse_args()
@@ -529,7 +623,8 @@ def main():
     print(f"Loaded {len(ships_register):,} ships register reference rows from {args.ships_register_path}")
 
     (dim_vessel, dim_agent, dim_zone, fact_zone_event,
-     dim_vessel_name_alias) = build_dims_and_fact(df, ships_register, vessel_type_map)
+     dim_vessel_name_alias) = build_dims_and_fact(df, ships_register, vessel_type_map,
+                                                  load_zone_facility(args.zone_facility_path))
     print(f"Built dim_vessel={len(dim_vessel):,} dim_agent={len(dim_agent):,} "
           f"dim_zone={len(dim_zone):,} fact_zone_event={len(fact_zone_event):,} "
           f"dim_vessel_name_alias={len(dim_vessel_name_alias):,}")

@@ -64,7 +64,13 @@ CREATE TABLE IF NOT EXISTS dim_agent (
 CREATE TABLE IF NOT EXISTS dim_zone (
     zone_key        BIGINT PRIMARY KEY,
     zone_name       VARCHAR UNIQUE,
-    zone_group      VARCHAR   -- heuristic classification: Anchorage / Buoy Range / Crossing / Slip / Terminal-Berth / Other
+    zone_group      VARCHAR,  -- heuristic classification: Anchorage / Buoy Range / Crossing / Slip / Terminal-Berth / Other
+    -- Authoritative facility classification from dictionaries/zone_facility.csv:
+    -- Elevator / Mid-Stream / Bulk Cargo / General Cargo / Tank Storage /
+    -- Chemical Plant / Refinery / Anchorage / Pilot Station / Cruise / LNG.
+    -- Prefer this over the heuristic zone_group above -- it is William's
+    -- hand-built dictionary, not a string match.
+    facility_type   VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS fact_zone_event (
@@ -94,7 +100,25 @@ CREATE TABLE IF NOT EXISTS fact_zone_event (
     -- fgis_record via its mrtis_event_key, not read this column -- doing the
     -- latter would silently understate any multi-certificate loading.
     fgis_record_id    VARCHAR,   -- -> fgis_record(fgis_record_id), primary only
-    fgis_record_count INTEGER    -- FGIS records resolving to this event (NULL if none)
+    fgis_record_count INTEGER,   -- FGIS records resolving to this event (NULL if none)
+    -- Agency fee in USD, accrued on SAILING from a facility berth. Set only
+    -- where action = 'Depart' AND the zone's facility_type is an actual berth
+    -- (i.e. not Anchorage and not Pilot Station); NULL everywhere else, so
+    -- SUM(agency_fee) over any slice is the fee earned on it with no further
+    -- filtering needed.
+    --
+    -- Rate is driven by the VESSEL, not the berth (confirmed by William
+    -- 2026-08-19): dim_vessel.vessel_type_canonical = 'Bulk' -> 10500,
+    -- everything else -> 3500. Vessel-based beats berth-based on coverage
+    -- (90.5% vs 82.1% of berth departures) and follows the ship being
+    -- agented rather than the dock it happens to be at. Note this settles the
+    -- 487 departures where the two bases disagree in favour of the vessel --
+    -- a bulk carrier sailing a chemical plant berth accrues 10500, not 3500.
+    --
+    -- CAVEAT: the 'everything else' tier absorbs 106 departures whose source
+    -- Type was blank. Unknown is being charged as non-bulk, which is a
+    -- decision rather than a fact -- see docs/DATA_QUALITY.md.
+    agency_fee        DOUBLE
 );
 
 CREATE INDEX IF NOT EXISTS idx_fact_vessel ON fact_zone_event(vessel_key);
