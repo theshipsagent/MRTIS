@@ -155,12 +155,11 @@ its pre-1980 build-year filter, and 1 (`9493523`, Stena Premium) is genuinely
 absent from the register. Two of the pre-1980 vessels are active merchant
 tonnage rather than genuine edge cases -- `7633375` Sunnanvik (cement carrier,
 1978, 8,407 dwt) and `7711725` Radcliffe R. Latimer (self-discharging Laker,
-1978, 37,257 dwt) -- and remain an open call for William: let 1978 merchant
-tonnage through the gate, or accept them billing without `dwt`/`tpc` (their
-agency fee is unaffected either way -- both already carry a Zone Report
-`Type` of `Bulk`, which decides the fee before `ship_type_group` is ever
-consulted). A further 39 vessels carry no IMO at all and were never
-candidates for this join.
+1978, 37,257 dwt). **Decided, William, 2026-08-19: leave as is, no gate
+change.** Both bill correctly regardless -- Zone Report `Type` is already
+`Bulk` for both, which decides the fee before `ship_type_group` is ever
+consulted -- they simply carry no `dwt`/`tpc`. A further 39 vessels carry no
+IMO at all and were never candidates for this join.
 
 The reference data lives at `dictionaries/ships_register_fleet.csv`, a
 snapshot exported from `Ships_Register/data/out/ships_register.duckdb`'s

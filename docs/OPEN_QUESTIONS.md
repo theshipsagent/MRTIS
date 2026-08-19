@@ -383,9 +383,11 @@ of calls (40,055 of 40,170), up from roughly 60%.
 
 24 vessels with a valid-format IMO remain unmatched -- 13 checksum-invalid
 (MRTIS-side), 10 behind Sea-web's pre-1980 build-year gate, 1 genuinely
-absent -- none of which call for another pull. **Still open**: whether to let
-1978 merchant tonnage (`7633375` Sunnanvik, `7711725` Radcliffe R. Latimer)
-through that gate. See `docs/BUILD.md` for the full breakdown.
+absent -- none of which call for another pull. **Decided, William,
+2026-08-19: leave the two 1978 merchant vessels (`7633375` Sunnanvik,
+`7711725` Radcliffe R. Latimer) as is, no gate change.** Both bill correctly
+regardless (Zone Report `Type` is already `Bulk` for both); they simply
+carry no `dwt`/`tpc`. See `docs/BUILD.md` for the full breakdown.
 
 The original chunk-pull plan is kept below for the record, in case a future
 gap needs the same approach.

@@ -45,19 +45,30 @@ prepared for this session's §9 was never needed and was never run.
   refresh — which touched only register enrichment — still forced a full
   FGIS + port-call rebuild from zero. Logged as `OPEN_QUESTIONS.md` §10.
 
+### Decided (by William, 2026-08-19, closing the session)
+
+- **§9 residual, closed, no change**: the two 1978 merchant vessels (Sunnanvik,
+  Radcliffe R. Latimer) stay behind Sea-web's pre-1980 build-year gate. Both
+  bill correctly regardless; they simply carry no `dwt`/`tpc`.
+- **My earlier correction (the `Radcliffe R. Latimer` billing-tier claim)**:
+  acknowledged, no further action.
+
 ### Open
 
-- **§9 residual**: let 1978 merchant tonnage (Sunnanvik, Radcliffe R.
-  Latimer) through Sea-web's pre-1980 build-year gate, or accept them billing
-  without `dwt`/`tpc`? Their agency fee is unaffected either way.
 - **§10**: is a stable, natural-key-derived `vessel_key`/`event_key` worth
   the schema change, given the register/dictionaries/feed all get revised on
   an ongoing basis and each one currently pays for a full downstream rebuild?
+  Raised, not scoped, not started.
 
 ### Next session starts by
 
-Nothing pending from William as of this entry — §7, §8 and §9 are resolved;
-§10 (stable keys) is raised but deliberately not scoped or started.
+§7, §8 and §9 are fully resolved, nothing pending from either side. §10
+(stable keys) is the only open thread, raised but deliberately not scoped —
+pick it up only if/when William wants to size it. A fresh independent audit
+is also due: the last one (`docs/audit/AUDIT_2026-08-19_0242.md`) predates
+this entire session's work (tonnage rename, ship_type/backfill, §8 fee logic,
+the world-fleet register refresh) — none of it has been adversarially
+checked yet.
 
 ---
 
