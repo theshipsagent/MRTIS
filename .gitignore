@@ -1,0 +1,31 @@
+# Raw source exports -- these are the inputs, not versioned. Keep them on
+# disk in this folder; the build script reads them directly from here.
+Zone Report*.csv
+
+# FGIS yearly export CSVs -- re-downloaded fresh by scripts/build_fgis.py on
+# every run (full rebuild philosophy, same as Zone Report). Public USDA data,
+# not versioned, ~10MB/year.
+fgis_source/
+
+# Built database -- fully regenerable from the CSVs above via
+# `python3 scripts/build_db.py`. Not versioned; keep it out of git history
+# so the repo stays small and the DB is always rebuilt from source of truth.
+data/db/*.duckdb
+data/db/*.duckdb.wal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Apple Numbers working files -- binary, non-diffable, and each one already has
+# its authoritative CSV export committed under dictionaries/. Keep the .numbers
+# on disk as the editable master; version the CSV the pipeline actually reads.
+*.numbers
+
+# Abandoned git directory from an earlier setup attempt -- not part of the project.
+_to_delete/
