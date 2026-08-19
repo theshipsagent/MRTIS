@@ -151,3 +151,77 @@ Zone, agent, and vessel-type crosswalk drafts are being generated fresh
 from the actual data (raw value + occurrence count, with canonical columns
 left blank for you to fill in) rather than assumed to exist already —
 sent alongside this doc.
+
+## 7. Questions raised by the 2026-08-19 independent audit
+
+From `docs/audit/AUDIT_2026-08-19_0242.md`. These are decisions only William
+can make — the audit deliberately changed nothing.
+
+### 7.1 Is the agency fee per port call, or per berth departure? — BLOCKING
+
+The rule as implemented charges on **every** `Depart` from a facility berth.
+Measured against `Enter`/`Exit` (pilot-station) call boundaries:
+
+- 7,271 of 38,296 fee-bearing port calls (19.0%) are charged 2–10 times
+- Charging once per call yields $280,343,000 against the $347,602,500 booked
+  inside call boundaries — a **$67,259,500 difference, 19.2% of the published
+  $349,625,500**
+- 179 of those charges ($1,746,500) are a second charge at the **same zone**
+  within 60 minutes of the first (e.g. Bold Guardian, Meraux Buoys Lower,
+  2020-04-27 08:27 then 08:28)
+
+`docs/PORT_CALL_EVIDENCE.md` already states the opposing principle from four
+real SOFs: *"Shifting within a berth is not a second berth call… Assembly must
+not read these as separate stops."* The two documents currently disagree.
+
+**Needs**: a ruling on the billing unit. The same-berth-within-an-hour repeats
+look wrong under either reading and can be collapsed regardless.
+
+### 7.2 Is `Kennington` (IMO 9664926) really a dredge/workboat?
+
+It sits on `dredge_exclusions.csv` with `exclude_as_dredge=Y` (one of the
+original 9), but its data profile is commercial: valid IMO, `Type=Tank` on
+every row, agent **Celtic** throughout, **174 `SWP Cross` events** (~87 river
+entries/exits, 2019-03 → 2026-07), 171 events at `Crosstex Energy` (Tank
+Storage), drafts to 25 ft. Excluding it removes 583 events, 87 berth sailings
+and **$304,500** in accrued fees.
+
+Same question, smaller stakes, for `Dodge Island` (7917800 — looks like a tug;
+anchorage/pilot only, zero berth events, so no fee impact either way).
+
+### 7.3 Should the name-only exclusion spare a complete river call?
+
+The name fallback fires only against rows with no valid IMO — which is exactly
+the documented "IMO, Agent and Type go missing together" defective input path,
+so real vessels land in it. Three genuine ocean port calls are currently
+deleted:
+
+- **T Jungfrau** — Sep–Oct 2023: `Enter` 25 ft → `CFI Donaldsonville 106` →
+  `Depart` **42 ft** → `Exit`. A loaded tanker call. (The IMO-bearing
+  T Jungfrau 9389289 survives — this is a different call by the same ship.)
+- **Heino** — Jun 2020: `Enter` 25 ft → `Chalmette Slip` → `Depart` 21 ft →
+  `Exit`. A general-cargo discharge.
+- **Corinthian** — Feb–Mar 2019: `Enter` → `Buck Kreihs` (ship repair) →
+  `Exit`. A real vessel; shipyard visit.
+
+**Possible rule**: never name-exclude rows that form a complete
+`Enter` → berth → `Exit` river transit.
+
+### 7.4 Should `Gen` (general cargo) bill at the bulk tier?
+
+`dictionaries/vessel_type.csv` maps `Gen` (16,752 rows) → `Bulk`, so general
+cargo ships accrue **$10,500** and are reported inside the "Bulk" row of the
+fee table in `DATA_QUALITY.md`. Consistent with BUILD.md's General Cargo
+reasoning, but it is stated nowhere and the report gives no way to see it.
+
+### 7.5 What counts as evidence that two same-name vessels are one ship?
+
+The audit found one false merge among the 31 (`1782585 -> 9747120`, "Egret" —
+131 rows, 51% of all repaired rows). `build_imo_repair_map`'s "exactly one
+check-digit-valid IMO" test cannot see a *second real vessel whose IMO is also
+corrupt*.
+
+The proposed discriminator, which cleanly separates Egret from the other 30:
+refuse the merge when the corrupted-IMO rows contain **no `Enter`/`Exit`
+event** and their date range **does not overlap** the period the good vessel
+actually carried that name. Confirm before implementing.

@@ -5,6 +5,64 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Audited — 2026-08-19 (session: independent audit, findings only)
+
+- **Independent data-integrity audit** — `docs/audit/AUDIT_2026-08-19_0242.md`
+  (+ `.pdf`, 18pp). Read-only adversarial verification of the seven published
+  claims, run in an isolated scratch copy; repo, dictionaries and
+  `mrtis.duckdb` verified byte-identical before and after. **Nothing in the
+  pipeline was changed.**
+
+  **Confirmed:** FGIS match rate 12,445 / 12,537 in-coverage = **99.2662%**,
+  1 ambiguous (`AQUITANIA` 2024-10-13), **0** identity guesses. **No fuzzy
+  matching anywhere** — all five name paths are exact equality on the
+  normalized string; `DSI`/`DSL Phoenix` cannot bridge under any of them.
+  Tonnage conserved **exactly** (MT and lb deltas 0.0), 18,315 output lines
+  map 1:1 onto `fgis_record_line`, and every cross-reference integrity test
+  is clean (0 wrong-vessel links, 0 action mismatches, 0 `day_offset` errors,
+  0 `fgis_record_count` errors, 0 fallbacks that had a sailing available).
+  **Idempotency confirmed** — two full rebuilds byte-identical across all 9
+  tables; both generated reports and the review CSV reproduce exactly.
+  Carnival ships and the real tanker Texas Star (9256860) survive; both
+  `Aquitania`s and all four `Sea Voyager`s stay separate.
+
+  **Wrong — 3 high:**
+  1. **IMO merge `1782585 -> 9747120` ("Egret") is false.** 131 rows — 51% of
+     all 256 repaired rows — of a 2019 Baton Rouge workboat (river miles
+     226–232, zero `Enter`/`Exit`, no draft/agent/type on any row, 7-of-7
+     digits differ) merged into a tanker that carried the name `Egret` only
+     from 2026-01-01. 78% of that vessel's events now belong to another ship;
+     $98,000 of its $112,000 in fees is fabricated.
+  2. **Agency fee charges per berth departure, not per port call.** 19.0% of
+     fee-bearing calls are charged 2–10 times; **$67,259,500 — 19.2% of the
+     published $349,625,500**. 179 charges ($1,746,500) repeat at the *same*
+     berth within an hour, which `PORT_CALL_EVIDENCE.md` explicitly says is
+     not a second berth call.
+  3. **`--keep-dredges` merges the Texas Star dredge into the real tanker**
+     ($3,937,500 vs $10,500 correct). `load_dredge_exclusions` adds a name to
+     `excluded_names` only for entries *without* an IMO, so the guard can
+     never fire for an IMO-bearing dictionary entry.
+
+  **Wrong — 5 medium:** `Kennington` (9664926) is a real agented tanker on the
+  exclusion list (583 events, $304,500); name-only exclusion deletes 3 real
+  ocean port calls (T Jungfrau, Heino, Corinthian); a missing dictionary
+  silently reports $0 (zone) or $313.3M (vessel-type) with exit code 0;
+  `DATA_QUALITY.md`'s "Raw rows read: 290,666" is post-filter — the true
+  figure is 314,335; and its NULL-fee narrative names six vessels that are on
+  the exclusion list and therefore cannot occur (the actual three are
+  `Carnival Valor Rb2` and `Ncl Escape Rb Sb` ×2).
+
+  **Also:** the "the build verifies that no fallback record had a sailing
+  available" claim in BUILD.md, CHANGELOG and the printed match report is
+  hardcoded prose — the property holds structurally and was confirmed by
+  query, but no build-time check exists. Hand-written figures across
+  WHITEPAPER / BUILD / CHANGELOG / FGIS_MATCH_SPEC have drifted from what the
+  code now produces (14 discrepancies tabulated in §8.2 of the audit).
+
+  Decisions this raises for William are logged as
+  `docs/OPEN_QUESTIONS.md` §7.
+
+
 ### Added
 - **Agency fee refinements**: where the Zone Report never recorded a Type,
   the rate falls back to the ships register (`ship_type_group LIKE
