@@ -157,7 +157,7 @@ sent alongside this doc.
 From `docs/audit/AUDIT_2026-08-19_0242.md`. These are decisions only William
 can make — the audit deliberately changed nothing.
 
-### 7.1 Is the agency fee per port call, or per berth departure? — BLOCKING
+### 7.1 Is the agency fee per port call, or per berth departure? — ANSWERED 2026-08-19
 
 The rule as implemented charges on **every** `Depart` from a facility berth.
 Measured against `Enter`/`Exit` (pilot-station) call boundaries:
@@ -176,6 +176,71 @@ not read these as separate stops."* The two documents currently disagree.
 
 **Needs**: a ruling on the billing unit. The same-berth-within-an-hour repeats
 look wrong under either reading and can be collapsed regardless.
+
+**RULED BY WILLIAM, 2026-08-19**: *"agency fee is per port call, not per berth
+except when split discharge then load."*
+
+So the billing unit is the **operational leg**, not the berth departure and not
+the bare call: one fee per port call, and a call that comes in laden, discharges
+and then loads a fresh cargo is two.
+
+`scripts/build_port_calls.py::split_into_legs()` already encodes exactly this —
+consecutive Load berths (topping off at a second elevator) stay ONE leg, and the
+Discharge→Load transition is what opens a second. **`port_call_leg` is therefore
+the fee grain**, and the rule becomes: *one fee per leg that has a berth stop,
+priced by the call's vessel type.*
+
+Measured against the assembled layer (40,170 calls / 43,238 legs):
+
+| Basis | Chargeable units | Total |
+|---|---|---|
+| As built — per berth departure | 48,167 sailings | $349,625,500 |
+| **Per leg with a berth stop (the ruling)** | **41,823 legs** | **$308,885,500** |
+| Difference | −6,344 | **−$40,740,000 (−11.7%)** |
+
+The split patterns confirm the ruling is describing real traffic — 2,874 calls
+have more than one leg:
+
+| Pattern | Calls |
+|---|---|
+| `Discharge -> Load` | 2,416 |
+| `Load -> Discharge` | 151 |
+| `Load -> Discharge -> Load` | 83 |
+| `No Cargo -> Load` | 81 |
+| `Discharge -> Load -> Discharge` | 29 |
+| others | 114 |
+
+1,415 legs never reached a berth and are excluded — no cargo work, no fee.
+
+#### 7.1a Follow-ups this ruling opens
+
+1. **$308,885,500 is a floor, not the answer.** 5,377 chargeable legs (12.9%)
+   have an unresolved activity, and `split_into_legs()` deliberately never lets
+   an unknown invent a split — so genuine Discharge→Load calls are being missed
+   wherever the draft delta, FGIS and dictionary all came up empty. **682
+   single-leg calls have ≥2 berth stops and contain at least one unresolved
+   stop**; if each were really one split, that is **+$3,661,000**. Worth
+   resolving activity harder before the number is treated as final.
+2. **Does a `No Cargo` leg accrue a fee?** 239 legs berth but work no cargo
+   (bunkers, stores, repair, lay-by). Currently counted — **$2,061,500**, of
+   which $1,837,500 is bulk. A ship at a berth is still being agented, but
+   confirm.
+3. **`open_end` calls** (274 chargeable legs, $2,065,000) never record an SWP
+   exit, so the call boundary is inferred from the next entry. Included as
+   normal; flagging only because the call is incomplete in the source.
+4. **Rate for a blank-type call.** The leg pricing above uses
+   `port_call.vessel_type` only; `agency_fee_for()` in `build_db.py` also falls
+   back to the ships register (`ship_type_group LIKE 'Bulk Carrier%'` → higher
+   tier). 91 chargeable legs have no canonical type — some are register-known
+   bulkers and would move to $10,500. The leg pricing must reuse
+   `agency_fee_for()` rather than re-implement the tiering.
+5. **The 179 same-berth-within-an-hour repeats disappear on their own** under
+   this ruling: they were second charges at one berth inside one leg, and a leg
+   can only be charged once. No separate fix needed.
+6. **Where does the fee now live?** `fact_zone_event.agency_fee` is per-event by
+   construction and cannot express a per-leg charge. Options: keep it as the
+   raw signal and add `port_call_leg.agency_fee` as the billable column, or
+   retire the event-level column. Needs a call before either script changes.
 
 ### 7.2 Is `Kennington` (IMO 9664926) really a dredge/workboat?
 
