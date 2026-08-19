@@ -7,6 +7,47 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
+## 2026-08-19 — Tonnage naming fix and ship-type gap-fill
+
+**Objective**: review the six-month port-call sample; fix two data-integrity
+gaps William spotted while reviewing it.
+
+### Decided (by William, 2026-08-19)
+
+1. **FGIS tonnage is `estimated_tons`, not `actual_tons`.** His original
+   mapping (`docs/FGIS_MATCH_SPEC.md`) already said "Metric Ton → estimated
+   tons" — the port-call build had implemented it as `actual_tons` instead.
+   Corrected across `port_call`/`port_call_leg`/`port_call_event`. A genuine
+   `actual_tons` column is added alongside, NULL until a real source exists;
+   promoting a leg from estimated to actual is future work, not inferred here.
+2. **`ship_type` (the register's raw type/family) is added**, and where a
+   register family has no size vocabulary — so `ship_type_group` would
+   otherwise be NULL — `ship_type_group` is backfilled from `ship_type`.
+   "Gaps are worse than variances in convention." 16 vessels in the current
+   warehouse gain a group this way, including *Radcliffe R. Latimer* (IMO
+   7711725), which now bills at the bulk tier.
+
+### Done
+
+- Schema, `build_db.py` and `build_port_calls.py` updated; full chain
+  rebuilt (`build_db.py` → `build_fgis_match.py` → `build_port_calls.py`),
+  all guardrails still pass, fee/tonnage totals unchanged except the one
+  vessel above.
+- Fixed an unrelated pre-existing bug found while rebuilding: `build_db.py`
+  crashed on every run after the FGIS/port-call drop message (`had_port_calls`
+  computed but never returned).
+- `docs/PORT_CALL_SPEC.md` §7 and `docs/BUILD.md` "Ships register enrichment"
+  updated. Six-month and scenario samples regenerated.
+
+### Next session starts by
+
+Same as before this fix: extending the register to tankers/gas/containers
+(**OPEN_QUESTIONS §9** — check first whether the separate `Ships_Register`
+world-fleet expansion already supersedes the chunk-pull plan there), and
+deciding **§8** (does a `No Cargo` leg open a split / bill at all).
+
+---
+
 ## 2026-08-19 — Port call assembly layer
 
 **Objective**: build the port call assembly layer, and produce a specific output

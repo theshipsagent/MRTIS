@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS port_call (
     vessel_name       VARCHAR,   -- dim_vessel's current name
     call_name         VARCHAR,   -- the name actually carried on this call's events
     vessel_type       VARCHAR,   -- canonical vessel type
-    ship_type_group   VARCHAR,   -- ships register
+    ship_type         VARCHAR,   -- ships register, raw type/family
+    ship_type_group   VARCHAR,   -- ships register, size-bucketed within family (see dim_vessel)
     dwt               DOUBLE,
     tpc               DOUBLE,
 
@@ -67,7 +68,11 @@ CREATE TABLE IF NOT EXISTS port_call (
     -- rather than one silently replacing the other.
     agency_fee_departures_total DOUBLE,
     fgis_record_count INTEGER,   -- FGIS grain certificates tied to this call
-    fgis_metric_tons  DOUBLE     -- their tonnage
+    -- FGIS certified metric tons, summed across the call's legs. Per William's
+    -- original mapping (docs/FGIS_MATCH_SPEC.md), FGIS tonnage is an ESTIMATE
+    -- until promoted -- see actual_tons.
+    estimated_tons    DOUBLE,
+    actual_tons       DOUBLE     -- promoted/certified actual tonnage; no source wired in yet
 );
 
 -- ---------------------------------------------------------------------------
@@ -168,7 +173,11 @@ CREATE TABLE IF NOT EXISTS port_call_leg (
     cargo             VARCHAR,   -- FGIS grain/grain class
     cargo_source      VARCHAR,   -- 'fgis' | 'dictionary' | NULL
     destination       VARCHAR,   -- FGIS declared destination (export legs)
-    actual_tons       DOUBLE,    -- FGIS certified metric tons
+    -- FGIS certified metric tons. An ESTIMATE, not a certified actual weight --
+    -- William's original mapping (docs/FGIS_MATCH_SPEC.md) is explicit that FGIS
+    -- tonnage promotes to actual_tons only once a genuine source for that exists.
+    estimated_tons    DOUBLE,
+    actual_tons       DOUBLE,    -- promoted actual tonnage; no source wired in yet -- always NULL for now
     fgis_record_count INTEGER,
     -- ONE fee per leg that reached a berth (William's ruling, 2026-08-19),
     -- priced by the call's vessel type on the same tiers build_db.py uses.
@@ -212,7 +221,8 @@ CREATE TABLE IF NOT EXISTS port_call_event (
     vessel_name       VARCHAR,   -- name carried on this event
     src_vessel_type   VARCHAR,   -- Type as exported (often blank)
     vessel_type       VARCHAR,   -- canonical, back-filled from the vessel
-    ship_type_group   VARCHAR,
+    ship_type         VARCHAR,   -- ships register, raw type/family
+    ship_type_group   VARCHAR,   -- ships register, size-bucketed within family (see dim_vessel)
     dwt               DOUBLE,
     tpc               DOUBLE,
 
@@ -265,7 +275,8 @@ CREATE TABLE IF NOT EXISTS port_call_event (
     cargo_group       VARCHAR,
     cargo             VARCHAR,
     destination       VARCHAR,
-    actual_tons       DOUBLE,    -- leg total; do NOT sum across the leg's rows
+    estimated_tons    DOUBLE,    -- leg total (FGIS, an estimate); do NOT sum across the leg's rows
+    actual_tons       DOUBLE,    -- leg total, promoted; no source wired in yet -- always NULL for now
     call_status       VARCHAR,
     is_split_call     BOOLEAN,
     -- The per-departure fee copied straight from fact_zone_event, unchanged and

@@ -174,7 +174,7 @@ def load_events(con):
                z.zone_name as src_zone, z.facility_type,
                a.agent_name as src_agent,
                v.imo_raw as src_imo, v.imo, v.natural_key, v.vessel_name as dim_vessel_name,
-               v.vessel_type_canonical, v.ship_type_group, v.dwt, v.tpc
+               v.vessel_type_canonical, v.ship_type, v.ship_type_group, v.dwt, v.tpc
         from fact_zone_event f
         join dim_zone z using (zone_key)
         join dim_vessel v using (vessel_key)
@@ -633,7 +633,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                 "agency": m["agency"], "agency_source": m["agency_source"],
                 "agent_changed_in_leg": m["agent_changed"],
                 "cargo_group": cargo_group, "cargo": cargo, "cargo_source": cargo_source,
-                "destination": destination, "actual_tons": tons,
+                "destination": destination, "estimated_tons": tons, "actual_tons": None,
                 "fgis_record_count": nrec, "agency_fee": fee,
                 "agency_fee_departures": fee_departures or None,
             })
@@ -684,7 +684,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                                        ev.at[i, "dim_vessel_name"]),
                 "src_vessel_type": ev.at[i, "src_vessel_type"],
                 "vessel_type": ev.at[i, "vessel_type_canonical"],
-                "ship_type_group": ev.at[i, "ship_type_group"],
+                "ship_type": ev.at[i, "ship_type"], "ship_type_group": ev.at[i, "ship_type_group"],
                 "dwt": ev.at[i, "dwt"], "tpc": ev.at[i, "tpc"],
                 "src_action": action_src, "action": action,
                 "event_time": ev.at[i, "event_time"],
@@ -705,7 +705,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                 "hours_since_prev": hours(ev.at[call[p - 1], "event_time"], ev.at[i, "event_time"]) if p else None,
                 "activity": m["activity"], "activity_method": m["method"],
                 "cargo_group": m["cargo_group"], "cargo": m["cargo"],
-                "destination": m["destination"], "actual_tons": m["tons"],
+                "destination": m["destination"], "estimated_tons": m["tons"], "actual_tons": None,
                 "call_status": status, "is_split_call": leg_count > 1,
                 "agency_fee": ev.at[i, "agency_fee"],
             })
@@ -717,6 +717,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             "imo": ev.at[first_i, "imo"], "vessel_name": ev.at[first_i, "dim_vessel_name"],
             "call_name": name_at(aliases, vessel_key, start_t, ev.at[first_i, "dim_vessel_name"]),
             "vessel_type": ev.at[first_i, "vessel_type_canonical"],
+            "ship_type": ev.at[first_i, "ship_type"],
             "ship_type_group": ev.at[first_i, "ship_type_group"],
             "dwt": ev.at[first_i, "dwt"], "tpc": ev.at[first_i, "tpc"],
             "call_start": start_t, "call_end": end_t, "call_hours": hours(start_t, end_t),
@@ -732,7 +733,8 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             "agency_fee_departures_total": sum(ev.at[i, "agency_fee"] for i in call
                                                if pd.notna(ev.at[i, "agency_fee"])) or None,
             "fgis_record_count": sum(lr["fgis_record_count"] for lr in leg_rows[-leg_count:]),
-            "fgis_metric_tons": sum(lr["actual_tons"] or 0 for lr in leg_rows[-leg_count:]) or None,
+            "estimated_tons": sum(lr["estimated_tons"] or 0 for lr in leg_rows[-leg_count:]) or None,
+            "actual_tons": None,
         })
 
     for i, reason in unassigned:
@@ -745,6 +747,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                                    ev.at[i, "dim_vessel_name"]),
             "src_vessel_type": ev.at[i, "src_vessel_type"],
             "vessel_type": ev.at[i, "vessel_type_canonical"],
+            "ship_type": ev.at[i, "ship_type"],
             "ship_type_group": ev.at[i, "ship_type_group"],
             "dwt": ev.at[i, "dwt"], "tpc": ev.at[i, "tpc"],
             "src_action": ev.at[i, "action_src"],
@@ -764,7 +767,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             "is_anchorage": ev.at[i, "facility_type"] == "Anchorage",
             "is_waiting_time": False, "dwell_hours": None, "hours_since_prev": None,
             "activity": None, "activity_method": None, "cargo_group": None, "cargo": None,
-            "destination": None, "actual_tons": None, "call_status": "unassigned",
+            "destination": None, "estimated_tons": None, "actual_tons": None, "call_status": "unassigned",
             "is_split_call": False, "agency_fee": ev.at[i, "agency_fee"],
         })
 
@@ -857,7 +860,7 @@ def validate(con, calls_df, legs_df, events_df, guards):
                                    where match_status='matched' and mrtis_event_key is not null""").fetchone()[0]
         fgis_recs = con.execute("""select count(*) from fgis_record
                                    where match_status='matched' and mrtis_event_key is not null""").fetchone()[0]
-        out_tons = float(legs_df.actual_tons.fillna(0).sum())
+        out_tons = float(legs_df.estimated_tons.fillna(0).sum())
         out_recs = int(legs_df.fgis_record_count.fillna(0).sum())
         # A certificate can only reach a leg if its berth event was placed in a
         # call. Where the source feed never recorded the SWP entry, the event is
@@ -919,11 +922,11 @@ def validate(con, calls_df, legs_df, events_df, guards):
 EVENT_COLUMNS = [
     "event_key", "port_call_id", "leg_id", "leg_seq", "event_seq", "unassigned_reason",
     "vessel_key", "src_imo", "imo", "vessel_name", "src_vessel_type", "vessel_type",
-    "ship_type_group", "dwt", "tpc", "src_action", "action", "event_time", "src_zone",
+    "ship_type", "ship_type_group", "dwt", "tpc", "src_action", "action", "event_time", "src_zone",
     "berth", "facility", "facility_type", "src_mile", "mile", "draft_ft", "src_agent",
     "agency", "agency_leg", "agency_normalized", "berth_stop_seq", "is_berth_stop",
     "is_geofence_artifact", "is_anchorage", "is_waiting_time", "dwell_hours", "hours_since_prev", "activity",
-    "activity_method", "cargo_group", "cargo", "destination", "actual_tons",
+    "activity_method", "cargo_group", "cargo", "destination", "estimated_tons", "actual_tons",
     "call_status", "is_split_call", "agency_fee",
 ]
 
@@ -1111,14 +1114,17 @@ def write_report(path, calls_df, legs_df, events_df, guards):
     A("## Cargo\n")
     with_cargo = legs_df[legs_df.cargo_group.notna()]
     A(f"- Legs carrying a cargo group: {len(with_cargo):,} of {n_leg:,} ({len(with_cargo) / n_leg:.1%})")
-    A("| Source | Legs | Tons |\n|---|---|---|")
+    A("| Source | Legs | Estimated Tons |\n|---|---|---|")
     for s, sub in legs_df.groupby("cargo_source"):
-        A(f"| `{s}` | {len(sub):,} | {sub.actual_tons.fillna(0).sum():,.0f} |")
+        A(f"| `{s}` | {len(sub):,} | {sub.estimated_tons.fillna(0).sum():,.0f} |")
     A("")
-    A("- Cargo, shipper, consignee, receiver, last/next port, origin and estimated tons stay "
+    A("- Cargo, shipper, consignee, receiver, last/next port and origin stay "
       "**out of this table until a source exists for them**. FGIS supplies grain cargo, "
-      "destination and certified tonnage; the zone dictionary supplies a cargo group where the "
+      "destination and tonnage; the zone dictionary supplies a cargo group where the "
       "berth can only ever handle one. Nothing else is inferred.\n")
+    A("- `estimated_tons` is FGIS certified tonnage -- per William's original mapping this is an "
+      "**estimate**, not a certified actual weight. `actual_tons` is reserved for a genuine actual "
+      "source and is NULL until one is wired in; do not read NULL there as zero.\n")
 
     A("## Guardrails\n")
     A("Checked on every build, over the whole data set. A HARD failure aborts the build and "
@@ -1160,9 +1166,9 @@ def export_months(events_df, calls_df, legs_df, path, months):
         if "call_start_sort" in events_df.columns else \
         events_df[events_df.port_call_id.isin(picked)].sort_values(["event_time", "event_seq"])
     cols = ["port_call_id", "leg_id", "leg_seq", "event_seq", "vessel_name", "imo", "vessel_type",
-            "ship_type_group", "dwt", "tpc", "action", "event_time", "berth", "facility",
+            "ship_type", "ship_type_group", "dwt", "tpc", "action", "event_time", "berth", "facility",
             "facility_type", "mile", "draft_ft", "activity", "activity_method", "cargo_group",
-            "cargo", "destination", "actual_tons", "src_agent", "agency_leg", "agency_normalized",
+            "cargo", "destination", "estimated_tons", "actual_tons", "src_agent", "agency_leg", "agency_normalized",
             "is_geofence_artifact", "is_waiting_time", "dwell_hours", "call_status",
             "is_split_call", "src_zone", "src_action", "src_mile", "src_imo", "src_vessel_type",
             "event_key"]
@@ -1174,7 +1180,7 @@ def export_months(events_df, calls_df, legs_df, path, months):
                 "facility_type", "berth_stop_count", "geofence_artifact_events",
                 "berth_arrive_time", "berth_depart_time", "waiting_hours", "berth_hours",
                 "outbound_idle_hours", "agency", "agency_source", "cargo_group", "cargo",
-                "destination", "actual_tons", "agency_fee", "agency_fee_departures"]
+                "destination", "estimated_tons", "actual_tons", "agency_fee", "agency_fee_departures"]
     legs[leg_cols].to_csv(path.replace(".csv", "_legs.csv"), index=False)
 
     calls = calls_df[calls_df.port_call_id.isin(picked)].sort_values("call_start")
@@ -1203,7 +1209,7 @@ def export_sample(events_df, calls_df, legs_df, path, n):
     sub = sub.sort_values(["port_call_id", "event_seq"], key=lambda s: s.map(order) if s.name == "port_call_id" else s)
     cols = ["scenario", "port_call_id", "leg_seq", "event_seq", "vessel_name", "imo", "vessel_type",
             "action", "event_time", "berth", "facility", "facility_type", "mile", "draft_ft",
-            "activity", "activity_method", "cargo_group", "cargo", "destination", "actual_tons",
+            "activity", "activity_method", "cargo_group", "cargo", "destination", "estimated_tons", "actual_tons",
             "src_agent", "agency_leg", "agency_normalized", "is_waiting_time", "dwell_hours",
             "agency_fee", "src_zone", "src_action", "src_mile", "src_imo", "event_key"]
     sub[cols].to_csv(path, index=False)
@@ -1219,7 +1225,7 @@ def export_sample(events_df, calls_df, legs_df, path, n):
                 "facility_type", "berth_stop_count", "geofence_artifact_events", "berth_arrive_time", "berth_depart_time",
                 "waiting_hours", "berth_hours", "inter_berth_idle_hours", "outbound_idle_hours",
                 "agency", "agency_source", "agent_changed_in_leg", "cargo_group", "cargo",
-                "cargo_source", "destination", "actual_tons", "fgis_record_count",
+                "cargo_source", "destination", "estimated_tons", "actual_tons", "fgis_record_count",
                 "agency_fee", "agency_fee_departures"]
     leg_path = path.replace(".csv", "_legs.csv")
     legs[leg_cols].to_csv(leg_path, index=False)

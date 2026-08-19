@@ -5,6 +5,30 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — tonnage naming and ship-type gap-fill (2026-08-19)
+
+- **`actual_tons` renamed to `estimated_tons`** on `port_call`, `port_call_leg`
+  and `port_call_event`. William's original mapping (`docs/FGIS_MATCH_SPEC.md`)
+  is explicit that summed FGIS metric tons is an *estimate*, not a certified
+  actual weight — the port-call build had implemented it as `actual_tons`
+  instead. A genuine `actual_tons` column is added alongside, NULL everywhere
+  for now (no source wired in); promoting a leg from estimated to actual is
+  future work.
+- **`ship_type` added** (`dim_vessel`, `port_call`, `port_call_event`) — the
+  ships register's raw type/family (e.g. `Cement Carrier`), alongside the
+  existing size-bucketed `ship_type_group`. Some register families carry no
+  size vocabulary at all (Cement Carrier, Aggregates Carrier, self-discharging
+  Lakers, ...), so `ship_type_group` is now backfilled from `ship_type` where
+  it would otherwise be NULL — a gap is worse than a variance in convention.
+  16 vessels in the current warehouse gain a `ship_type_group` this way; one,
+  *Radcliffe R. Latimer* (IMO 7711725, flagged open in the Ships_Register
+  world-fleet-refresh thread), now correctly bills at the bulk tier via
+  `build_db.py::agency_fee_for()`'s existing register fallback.
+- Fixed an unrelated pre-existing bug in `build_db.py::write_db()`/`main()`:
+  `had_port_calls` was computed but never returned, crashing every run after
+  the FGIS/port-call-layer drop message. Found while rebuilding to verify the
+  above.
+
 ### Audited — 2026-08-19 (session: independent audit, findings only)
 
 - **Independent data-integrity audit** — `docs/audit/AUDIT_2026-08-19_0242.md`

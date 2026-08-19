@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS dim_vessel (
     -- Enriched by canonical IMO match against dictionaries/ships_register_fleet.csv
     -- (William's separate Ships_Register/Sea-web pipeline). NULL when no IMO match --
     -- never guessed/inferred.
+    ship_type       VARCHAR,        -- register's raw type/family, e.g. 'Cement Carrier'
+    -- Size-bucketed group within a family, e.g. 'Bulk Carrier-Handymax'. Some
+    -- families in the register carry no size vocabulary (Cement Carrier,
+    -- Aggregates Carrier, self-discharging Lakers, ...) -- there ship_type_group
+    -- is backfilled from ship_type rather than left NULL (William, 2026-08-19:
+    -- a gap is worse than a variance in convention). ship_type above always
+    -- holds the register's original value regardless.
     ship_type_group VARCHAR,        -- e.g. 'Bulk Carrier-Handymax'
     dwt             DOUBLE,         -- deadweight tonnage
     tpc             DOUBLE          -- tonnes per centimetre immersion

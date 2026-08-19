@@ -248,14 +248,22 @@ def load_ships_register(path):
     project) to enrich dim_vessel by canonical IMO. Returns an empty frame
     with the right columns if the dictionary file isn't present, so the
     build still runs without it."""
-    cols = ["imo", "ship_type_group", "dwt", "tpc"]
+    cols = ["imo", "ship_type", "ship_type_group", "dwt", "tpc"]
     if not os.path.exists(path):
         return pd.DataFrame(columns=cols)
     reg = pd.read_csv(path, dtype=str, keep_default_na=False)
-    reg = reg[["imo", "ship_type_group", "dwt", "tpc"]].copy()
+    reg = reg.rename(columns={"ship_type_ref": "ship_type"})
+    reg = reg[["imo", "ship_type", "ship_type_group", "dwt", "tpc"]].copy()
     reg["dwt"] = pd.to_numeric(reg["dwt"], errors="coerce")
     reg["tpc"] = pd.to_numeric(reg["tpc"], errors="coerce")
+    reg["ship_type"] = reg["ship_type"].replace("", None)
     reg["ship_type_group"] = reg["ship_type_group"].replace("", None)
+    # William, 2026-08-19: some register families carry no size vocabulary
+    # (Cement Carrier, Aggregates Carrier, self-discharging Lakers, ...), so
+    # ship_type_group comes back blank even though the vessel's type is known.
+    # Carry ship_type over into the gap rather than leave it NULL -- a gap is
+    # worse than a variance in convention. ship_type itself is untouched.
+    reg["ship_type_group"] = reg["ship_type_group"].fillna(reg["ship_type"])
     # imo is the join key -- fleet_joined has no duplicate IMOs (verified),
     # but guard anyway: keep first if a future export ever has one.
     reg = reg.drop_duplicates(subset=["imo"], keep="first")
@@ -488,7 +496,7 @@ def write_db(db_path, schema_sql_path, dim_vessel, dim_agent, dim_zone, fact_zon
     con.execute(
         "INSERT INTO dim_vessel SELECT vessel_key, imo_raw, imo, imo_valid, vessel_name, "
         "natural_key, first_seen, last_seen, most_common_type, vessel_type_canonical, "
-        "imo_check_valid, ship_type_group, dwt, tpc FROM dim_vessel_df"
+        "imo_check_valid, ship_type, ship_type_group, dwt, tpc FROM dim_vessel_df"
     )
     con.register("dim_agent_df", dim_agent)
     con.execute(
@@ -508,7 +516,7 @@ def write_db(db_path, schema_sql_path, dim_vessel, dim_agent, dim_zone, fact_zon
         "name_normalized, first_seen, last_seen, event_count FROM alias_df"
     )
     con.close()
-    return had_fgis_match
+    return had_fgis_match, had_port_calls
 
 
 def write_report(report_path, files, stats, dim_vessel, dim_agent, dim_zone, fact_zone_event,
@@ -700,7 +708,7 @@ def main():
           f"dim_zone={len(dim_zone):,} fact_zone_event={len(fact_zone_event):,} "
           f"dim_vessel_name_alias={len(dim_vessel_name_alias):,}")
 
-    had_fgis_match = write_db(args.db_path, args.schema_path, dim_vessel, dim_agent,
+    had_fgis_match, had_port_calls = write_db(args.db_path, args.schema_path, dim_vessel, dim_agent,
                               dim_zone, fact_zone_event, dim_vessel_name_alias)
     print(f"Wrote database: {args.db_path}")
 

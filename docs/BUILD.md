@@ -122,12 +122,20 @@ orders of magnitude.
 
 ## Ships register enrichment
 
-`dim_vessel` is enriched with `ship_type_group`, `dwt` (deadweight), and
+`dim_vessel` is enriched with `ship_type` (the register's raw type/family),
+`ship_type_group` (size-bucketed within family), `dwt` (deadweight), and
 `tpc` (tonnes per centimetre immersion) from William's separate
 Ships_Register project (a Sea-web/S&P Global Maritime world-fleet pull).
 The join is by canonical IMO only -- no match, no guess: unmatched vessels
-simply have these three columns NULL (about 40% of vessels as of 2026-08-18 --
+simply have these four columns NULL (about 40% of vessels as of 2026-08-18 --
 see `docs/DATA_QUALITY.md` for the current match rate).
+
+Where a matched family carries no size vocabulary at all (Cement Carrier,
+Aggregates Carrier, self-discharging Lakers, ...), `ship_type_group` would
+otherwise be NULL even though the vessel's type is known -- there it is
+backfilled from `ship_type` instead (William, 2026-08-19: a gap is worse than
+a variance in convention). `ship_type` always holds the register's original
+value regardless.
 
 **That gap is a scope boundary, not a coverage failure.** The register's
 `ship_type_group` vocabulary contains only Bulk Carrier and General Cargo

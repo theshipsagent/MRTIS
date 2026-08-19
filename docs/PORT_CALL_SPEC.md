@@ -267,19 +267,36 @@ Only where a source can actually say:
 
 | Column | Source |
 |---|---|
-| `cargo`, `destination`, `actual_tons` | FGIS grain certificates, aggregated per leg |
+| `cargo`, `destination`, `estimated_tons` | FGIS grain certificates, aggregated per leg |
 | `cargo_group` | FGIS (`Grain`), else the zone dictionary's `Cargo group` |
-| `dwt`, `tpc`, `ship_type_group` | the ships register, via canonical IMO |
+| `dwt`, `tpc`, `ship_type`, `ship_type_group` | the ships register, via canonical IMO |
 
-`Shipper`, `Consignee`, `Receiver`, `Last Port`, `Next Port`, `Origin`,
-`Est Tons` and `Vessel Type Group` from `logic.md` are **deliberately absent**.
-No source for them exists yet, and an empty column that looks like a real one is
-worse than no column. They get added when their data arrives.
+`Shipper`, `Consignee`, `Receiver`, `Last Port`, `Next Port` and `Origin` from
+`logic.md` are **deliberately absent**. No source for them exists yet, and an
+empty column that looks like a real one is worse than no column. They get
+added when their data arrives.
 
 Tonnage is aggregated per leg from `fgis_record`, never read from the scalar
 `fgis_record_id` — one sailing routinely carries several certificates.
-`actual_tons` on an event row is the **leg total**; do not sum it across the
-leg's rows.
+`estimated_tons` on an event row is the **leg total**; do not sum it across
+the leg's rows.
+
+**`estimated_tons` vs `actual_tons`** (William, 2026-08-19): William's original
+mapping (`docs/FGIS_MATCH_SPEC.md`) is explicit that summed FGIS metric tons is
+an *estimate*, not a certified actual weight — `logic.md`'s `'Est Tons'` field.
+`estimated_tons` carries that FGIS figure. `actual_tons` is reserved for a
+genuinely certified/actual weight and is NULL everywhere for now; no source for
+it is wired in. Promoting a leg from estimated to actual is future work, not
+something this build infers.
+
+**`ship_type` vs `ship_type_group`** (William, 2026-08-19): `ship_type` is the
+ships register's raw type/family (e.g. `Cement Carrier`); `ship_type_group` is
+the size-bucketed group within a family (e.g. `Bulk Carrier-Handymax`). Some
+families in the register carry no size vocabulary at all, so `ship_type_group`
+would otherwise be NULL even though the vessel's type is known. There,
+`ship_type_group` is backfilled from `ship_type` rather than left empty — a
+gap is worse than a variance in convention. `ship_type` always holds the
+register's original value regardless of whether the backfill fired.
 
 ---
 
