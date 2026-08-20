@@ -291,12 +291,26 @@ deleted:
 **Possible rule**: never name-exclude rows that form a complete
 `Enter` → berth → `Exit` river transit.
 
-### 7.4 Should `Gen` (general cargo) bill at the bulk tier?
+### 7.4 Should `Gen` (general cargo) bill at the bulk tier? — RULED, William, 2026-08-19
 
 `dictionaries/vessel_type.csv` maps `Gen` (16,752 rows) → `Bulk`, so general
 cargo ships accrue **$10,500** and are reported inside the "Bulk" row of the
 fee table in `DATA_QUALITY.md`. Consistent with BUILD.md's General Cargo
 reasoning, but it is stated nowhere and the report gives no way to see it.
+
+**RULED**: *"Gen = Bulk. General cargo ships belong in the dry-bulk tier and
+in R5."* This confirms the build as it stands — `dictionaries/vessel_type.csv`
+already maps `Gen` → `Bulk` — so **no figure moves**. Raised via the
+`mrtis-claris` review package's independent audit (finding A1), which
+quantified the stakes: of R5's 3,112 legs / $15,560,000 (pre the
+first-working-berth fix, §12.3.3.1), 1,509 legs / $7,545,000 (48.5%) are
+vessels whose Zone Report `Type` is `Gen`, not `Bulk`; a further 1,045 legs /
+$10,972,500 of `Gen` traffic bills at the base $10,500 tier. Roughly $18.5M of
+the billable total turns on this one dictionary row. What this ruling changes
+is disclosure, not arithmetic: a reviewer reading R5 as "bulk carriers at
+general cargo terminals" should not be surprised that half the legs are
+general-cargo hulls — `docs/BUILD.md`'s "Ships register enrichment" section
+already carries the general-cargo framing this confirms.
 
 ### 7.5 What counts as evidence that two same-name vessels are one ship?
 
@@ -364,6 +378,21 @@ Combined effect on the ruling-basis total: **$304,808,000 → $298,868,500**
 (-$5,939,500), over 41,334 → 40,245 chargeable legs. Implemented in
 `split_into_legs()` and the leg-fee computation in
 `scripts/build_port_calls.py`; see `docs/PORT_CALL_SPEC.md` §4.
+
+**Extended and generalised, William, 2026-08-19 (later session)**: what 8a/8b
+built for splitting and billing did not yet reach `berth_stop_count`,
+`berth_hours`, R5's berth-pricing lookup (§12.3.3.1), or the leg's own
+activity label (§11.1a) — a layberth stop could still decide a fee amount,
+count as a real berth stop, or overwrite an honest "unresolved" label with
+`No Cargo`. Built as one general **non-commercial time** classification
+rather than more layberth special-casing, per William: *"some of the outliers
+may be for other oddities, but as long as time is accounted for, otherwise
+they need no acknowledgement either by fee or count."* Layberth is its first
+member; the shape (excluded from counts and fees, flagged not deleted, time
+preserved on the spine) is meant to receive the next such oddity without
+reopening this logic. See §11.1 and §12.3.3.1 for the specific build and
+verified figures, and `docs/PORT_CALL_SPEC.md` §4/§6 for the consolidated
+write-up.
 
 ## 9. Extending the ships register to tankers and the other types — RESOLVED, 2026-08-19 (superseded)
 
@@ -509,9 +538,12 @@ Raised by `docs/audit/AUDIT_2026-08-19_1746.md`, which audited the port-call
 assembly layer (`git log 13937b9..HEAD`, 13 commits). Each of these needs a
 business ruling; the audit deliberately did not decide any of them.
 
-### 11.1 What should a leg report when it mixes a layberth stop with an unresolved working berth?
+### 11.1 What should a leg report when it mixes a layberth stop with an unresolved working berth? — RULED, William, 2026-08-19, BUILT
 
 **54 legs currently report `activity = 'No Cargo'` and bill $413,000 anyway.**
+(This figure predates §12's re-tiering; re-derived against the current
+schedule it is **$281,750** — the label/fee contradiction below is unaffected
+by which fee schedule is in force.)
 
 §8a lets a `No Cargo` stop join the leg in progress. The leg's label then comes
 from `real_acts[0]` — the first stop whose activity is truthy and not
@@ -546,6 +578,33 @@ Two knock-on effects of the same code path, which the same ruling should cover:
 
 *Dollars: $413,000 across 54 legs. Rows: 54 legs, 7 with contradictory cargo,
 20 with a misleading berth.*
+
+**RULED**: **(a)** — an unresolved stop outranks `No Cargo` for the leg's
+label. Reached via the `mrtis-claris` review package's independent audit,
+which found the layberth ruling (§8, generalised below into a "non-commercial
+time" classification) picks (a) by construction: if a layberth stop is not
+considered when resolving the leg's activity, a leg whose only other stop is
+unresolved has no activity to report and correctly goes `NULL`, instead of
+borrowing `No Cargo` from a berth the ruling says to ignore. Confirmed against
+the data before building: all 54 legs have at least one real, non-layberth
+working berth stop — none is layberth-only — so they keep billing.
+
+**BUILT AND VERIFIED, 2026-08-19.** `build_frames()` in
+`scripts/build_port_calls.py` now checks, in order: a real (non-`No Cargo`)
+activity first; failing that, whether the leg contains any unresolved
+(`activity IS NULL`) stop, in which case the leg's own activity is `NULL`;
+only a leg with nothing but layberth stops reports `No Cargo` itself. This
+also fixes both knock-on effects above for free: `cargo_group` and
+`first_berth_zone`/`facility_type` are now read from the leg's first
+*working* stop (§12.3.3.1's fix, same code path), not whichever stop happened
+to be literally first. Verified: **0** legs now report `No Cargo` while
+carrying a fee (all 54 relabel to `NULL`/unresolved). Their combined fee is
+**not** exactly $281,750 post-rebuild, because 6 of the 54 also fall inside
+the R5 first-working-berth fix (§12.3.3.1) and revert from the $5,000 General
+Cargo tier to the $10,500 Bulk base tier — the two rulings touch an
+overlapping population (a leg with both a layberth stop and an unresolved
+stop), so their dollar effects are not separable. See §12.3.3.1 for the full
+reconciliation.
 
 ### 11.2 Should `port_call.agency_fee_departures_total` include unplaced events?
 
@@ -602,7 +661,13 @@ a berthing vessel is always agented regardless of identity, they are under-bille
 Recorded here so they are not lost; none needs a decision:
 
 - `sql/schema_port_call.sql` states summing `port_call_event.agency_fee`
-  "over-bills by ~12%". Actual: **17.0%** ($50,757,000).
+  "over-bills by ~12%". Actual: **17.0%** ($50,757,000) against the schedule
+  in force when that comment was written; against the current (§12-tiered)
+  leg basis it is 28.2%, and it moves again with every fee-schedule or
+  billing-unit change. **FIXED, 2026-08-19**: the comment no longer states a
+  number that can go stale a third time — it points at
+  `docs/PORT_CALL_QUALITY.md`'s Agency fee section instead, which is
+  re-derived every build.
 - `docs/PORT_CALL_QUALITY.md:86` says the 54 legs "bill exactly as [they] did
   before this ruling". They cannot — §8 changed leg membership. The real §8
   movement is **−$3,258,500 across 313 calls** ($302,127,000 → $298,868,500),
@@ -774,6 +839,83 @@ vessel-only rules never had to answer:
 
 This restores the original §12.2 indicative table exactly — no change to the
 headline **−$26,701,000 → $272,167,500** figure.
+
+#### 12.3.3.1 amended — R5 prices off the first *WORKING* berth — RULED and BUILT, William, 2026-08-19
+
+The `mrtis-claris` review package's independent audit (finding A2) found a
+conflict the ruling above did not anticipate: 14 of the 29 `facility_type =
+General Cargo` zones are also `ops = Layberth` (repair yards and lay-up
+wharves — Poland St, Perry Street, Buck Kreihs, Alabo St, Esplanade Ave, and
+the five Violet Docks). Where one of these is a leg's literal first berth
+stop, "first berth of the leg decides R5" reads the lay-up wharf and prices
+the whole leg at $5,000 even when the vessel's real cargo work — the thing R5
+is meant to price — happened at a different berth entirely (worked examples:
+Gh Power, Belforest, Olympia Gr, all laid up at a repair yard for days before
+loading or discharging at a genuine elevator or buoy).
+
+**RULED**: *"(b), this works, layberths don't need to be considered in counts
+and fees, we just need to have it time-wise attached to the leg and allocated
+as layberth when doing time calcs / KPI."* R5 (and `first_berth_zone`/
+`first_berth_facility`/`facility_type` generally) now resolve from the leg's
+first **working** (non-layberth) stop, skipping layberth stops the same way
+§8a already skips them when resolving splits — generalised the same session
+into the "non-commercial time" classification (§8, extended below) rather
+than built as a layberth-only carve-out.
+
+**BUILT AND VERIFIED, 2026-08-19.** Implemented in `build_frames()`
+(`scripts/build_port_calls.py`): `head`/`zinfo` for a leg now come from
+`[st for st in lg if not st["is_non_commercial"]][0]`, falling back to the
+leg's literal first stop only when every stop in the leg is layberth (a pure
+lay-up leg, which bills nothing regardless). This is the same field that
+feeds both `port_call_leg.facility_type` (the reported berth type) and the
+`agency_fee_for()` call site, so the fix corrects the fee and the reporting
+at once.
+
+**The impact is +$511,500 across 93 legs, not the +$440,000/80 legs
+indicatively estimated when this was scoped.** The `mrtis-claris` audit's
+"80 legs" enumerated only 5 of the 14 layberth zones by name (Poland St,
+Perry Street, Buck Kreihs, Alabo St, Esplanade Ave) and never counted the five
+Violet Dock zones, despite its own text confirming all 14 are
+`facility_type = General Cargo`. Re-derived directly from the rebuilt
+database: **107** chargeable Bulk legs have a literal first berth stop at one
+of the 14 layberth zones (matching $535,000 at the old, pre-fix pricing —
+also more than the audited $400,000). Of those 107, **93** move to a
+non-General-Cargo first working berth and revert to the $10,500 base tier
+(+$511,500); the remaining **14** happen to have a second, genuine (non-
+layberth) General Cargo berth as their next stop, so they correctly stay at
+$5,000 — but now attributed to that real berth (e.g. Chalmette Slip, 7th
+Street, Globalplex, Louisiana Ave, Avondale, Nashville Ave A) instead of the
+repair yard. **Billable total: $272,167,500 → $272,679,000.**
+
+This also interacts with §11.1a (below): 6 of the 54 legs relabelled from
+`No Cargo` to unresolved there also have a layberth first stop, so their fee
+moves under this ruling too — the two fixes are not separable on that
+6-leg overlap. See §11.1 for the reconciliation.
+
+Also built the same session, generalising §8 into a "non-commercial time"
+classification rather than a layberth-only rule (per William, same message:
+*"some of the outliers may be for other oddities, but as long as time is
+accounted for, otherwise they need no acknowledgement either by fee or
+count"*):
+
+- `port_call_leg.berth_stop_count`/`.berth_hours` (and the same columns on
+  `port_call`) now exclude layberth stops; a new `layberth_hours` column
+  (leg and call total) carries the excluded time instead of dropping it.
+  **45,742 hours (389 stops, 379 legs)** move out of `berth_hours`.
+- Pure lay-up calls (every berth visit non-commercial) are flagged, not
+  deleted: `port_call.is_commercial_call = FALSE` / `call_class = 'layup'`.
+  **142 calls, 23,390 hours (975 vessel-days)** preserved on the spine,
+  excluded from every count and fee — answering part of §14 below. A call
+  that never reached a berth at all is unaffected (stays `TRUE`/
+  `'commercial'`); it is a separate, pre-existing category.
+- Verification (all guardrails pass): port calls 40,170 → **40,028**
+  commercial (142 flagged); legs 41,804 → **41,662** commercial;
+  per-departure basis **$349,625,500, unchanged** (frozen per §12.3.4, and
+  confirmed untouched — this rebuild only changed `build_port_calls.py`'s
+  leg-level pricing, never `build_db.py`'s per-event computation).
+
+See `docs/PORT_CALL_SPEC.md` §4/§6 for the full write-up and
+`sql/schema_port_call.sql` for the new columns.
 
 #### 12.3.4 Does this apply to the per-departure comparison basis too?
 
@@ -948,6 +1090,20 @@ refinements once we have the missing data sets to round it out."
   scope for a dedicated session); now explicitly phase 2 per the phasing
   ruling above. Needs a scratch-copy rebuild and full reverification of
   splits/legs/dollars regardless of when it happens, per standing practice.
+  **Order decided, 2026-08-19, when §12.3.3.1's first-working-berth fix
+  landed**: built independently, §13 (and specifically §13.1's `ops =
+  Discharge` on the 14 remaining non-layberth General Cargo zones) stays
+  deferred to phase 2 rather than being pulled forward. §13.1 touches the
+  same 14 zones the first-working-berth lookup can now land on, but not the
+  same *decision* — §12.3.3.1 only changes which stop is picked as "first
+  working" (skip layberth), never how that stop's `ops`/activity resolves;
+  §13.1 changes the latter. The two are independent code paths, and this
+  session's verification (billable total, R5 population, per-departure
+  freeze) holds regardless of §13's build state, so there is no correctness
+  reason to bundle them. Bundling would only make sense to avoid a *second*
+  scratch-copy rebuild when §13 eventually lands — a convenience, not a
+  dependency, and not enough on its own to break William's original phase-2
+  scoping (pending additional data sets, per the phasing ruling above).
 - §12.3.2 (three named types with zero traffic, `General Cargo Ship (with
   Ro-Ro facility)` ambiguity) — not raised for a ruling this session.
 
@@ -967,3 +1123,10 @@ each split leg attributed to its own agent.
   agency fee (excludes the ~9% where `agency_fee_for()` returns `None` — no
   usable IMO and no type from either source, the tug/workboat exclusion).
   Dismissed when asked.
+- **One sub-question answered, 2026-08-19**: does a pure lay-up call count?
+  **No.** William, deciding the non-commercial-time classification (§8,
+  extended): a pure lay-up call does not count and does not bill. Built as
+  `port_call.is_commercial_call` / `call_class = 'layup'` — **142 calls**
+  excluded. §14's report should filter `is_commercial_call` by default, the
+  same flag every fee query uses. Timing and full scope (the agency-fee-only
+  question above) remain open.

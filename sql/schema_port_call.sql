@@ -51,7 +51,27 @@ CREATE TABLE IF NOT EXISTS port_call (
 
     leg_count         INTEGER,   -- 1 = single call, 2+ = split call
     is_split          BOOLEAN,
+    -- Non-commercial time (William, 2026-08-19): a layberth stop is real
+    -- elapsed time but not a cargo job -- it must not count as a call or bill
+    -- a fee, but the row, its events and its place in the vessel's SWP-to-SWP
+    -- sequence all stay on the spine (flag, never delete: "if the ship was at
+    -- layberth 3 days, how do you explain the time gap?"). FALSE only for a
+    -- call whose every berth visit was non-commercial (a pure lay-up/repair
+    -- call, e.g. Buck Kreihs); a call that never reached a berth at all is a
+    -- separate, pre-existing category and stays TRUE. Built as a general
+    -- classification, not a layberth special case -- layberth is its first
+    -- member, and any future non-commercial oddity joins the same flag rather
+    -- than reopening this logic. `call_class` names the reason ('commercial' |
+    -- 'layup' today); `is_commercial_call` is the boolean every count and fee
+    -- query should filter on by default.
+    is_commercial_call BOOLEAN,
+    call_class        VARCHAR,
+    -- Berth stops that were actual cargo work -- excludes non-commercial
+    -- (layberth) visits, the same way berth_hours below does.
     berth_stop_count  INTEGER,
+    -- Non-commercial (layberth) dwell across the whole call, summed from its
+    -- legs. Time is accounted for, not lost -- see port_call_leg.layberth_hours.
+    layberth_hours    DOUBLE,
     anchorage_stop_count INTEGER,
     event_count       INTEGER,
 
@@ -102,7 +122,12 @@ CREATE TABLE IF NOT EXISTS port_call_leg (
     leg_end           TIMESTAMP,
     leg_hours         DOUBLE,
 
-    -- 'Load' | 'Discharge' | 'No Cargo' | NULL (unresolved -- never guessed)
+    -- 'Load' | 'Discharge' | 'No Cargo' | NULL (unresolved -- never guessed).
+    -- A leg's label follows real activity first; below that, an unresolved
+    -- stop outranks 'No Cargo' (William, 2026-08-19, §11.1a) -- a layberth
+    -- stop elsewhere in the leg must not overwrite a genuine "we don't know"
+    -- with a non-commercial label borrowed from a different stop. Only a leg
+    -- with nothing but layberth stops reports 'No Cargo' itself.
     activity          VARCHAR,
     -- How `activity` was decided, in the order the build tries them:
     --   'draft_delta' -- the vessel sailed deeper than it arrived (Load) or
@@ -129,11 +154,23 @@ CREATE TABLE IF NOT EXISTS port_call_leg (
     activity_conflict_reason VARCHAR,
     draft_delta_ft    INTEGER,   -- sailing draft - arrival draft at the leg's berth work
 
+    -- Berth stops that were actual cargo work. Excludes non-commercial
+    -- (layberth) stops (William, 2026-08-19) -- their time is not lost, it
+    -- moves to layberth_hours below; a leg of nothing but layberth stops
+    -- reports 0 here, same as a leg that never berthed at all (distinguish the
+    -- two by layberth_hours > 0, not by this column).
     berth_stop_count  INTEGER,
     -- Berth events inside this leg's visits that are neither the first docking
     -- nor the last sailing: geofence/AIS artefacts, not operations.
     geofence_artifact_events INTEGER,
-    first_berth_zone  VARCHAR,   -- raw zone of the leg's first berth stop
+    -- The leg's first WORKING berth stop -- layberth stops are skipped when
+    -- resolving first_berth_zone/first_berth_facility/facility_type (William,
+    -- 2026-08-19), the same way §8a already skips them when resolving splits.
+    -- Falls back to the leg's literal first stop only when every stop in the
+    -- leg is non-commercial. This is also the field R5 (§12.3.3.1) prices
+    -- off: a bulk carrier that lays up at a repair yard before loading at an
+    -- elevator now reads and prices from the elevator, not the repair yard.
+    first_berth_zone  VARCHAR,   -- raw zone of the leg's first WORKING berth stop
     first_berth_facility VARCHAR,-- its canonical facility name
     facility_type     VARCHAR,   -- its facility type
     berth_arrive_time TIMESTAMP, -- arrival at the leg's first berth
@@ -154,7 +191,14 @@ CREATE TABLE IF NOT EXISTS port_call_leg (
     -- anchorage the source left open while the vessel was already working.
     inter_berth_idle_hours DOUBLE,
     outbound_idle_hours    DOUBLE,
+    -- Hours alongside doing actual cargo work. Excludes non-commercial
+    -- (layberth) dwell -- see layberth_hours below.
     berth_hours            DOUBLE,
+    -- Non-commercial (layberth) dwell on this leg: real elapsed time, but not
+    -- cargo work, so it is reported separately rather than folded into
+    -- berth_hours (William, 2026-08-19 -- "allocated as layberth when doing
+    -- time calcs / KPI"). 0 for a leg with no layberth stop.
+    layberth_hours          DOUBLE,
 
     agency            VARCHAR,   -- canonical agency for this leg
     -- Where that agency came from:
@@ -282,7 +326,12 @@ CREATE TABLE IF NOT EXISTS port_call_event (
     -- The per-departure fee copied straight from fact_zone_event, unchanged and
     -- reconciled by a hard guardrail. This is NOT the billable figure -- under
     -- William's ruling the fee is charged once per leg, and that number lives on
-    -- port_call_leg.agency_fee. Summing this column over-bills by ~12%.
+    -- port_call_leg.agency_fee. Summing this column over-bills by roughly
+    -- 25-30% against the leg basis (audit #2 §A5: an earlier "~12%" here was
+    -- stale even against the schedule it was written under -- see
+    -- docs/PORT_CALL_QUALITY.md's Agency fee section for the current figure,
+    -- re-derived every build, rather than a number hand-copied here to drift
+    -- again).
     agency_fee        DOUBLE
 );
 

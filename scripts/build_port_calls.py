@@ -492,6 +492,14 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             ref = st["arrive_idx"] if st["arrive_idx"] is not None else st["depart_idx"]
             zinfo = zone_lookup(zdict, ev.at[ref, "src_zone"], ev.at[ref, "action_src"])
             st.update(resolve_activity(ev, st, zinfo, fgis, min_delta))
+            # Non-commercial time (William, 2026-08-19): a layberth stop is real
+            # elapsed time but not a cargo job -- it must not shape money or
+            # counts (§8), decide which berth prices R5 (§12.3.3.1), or be
+            # indistinguishable from a stop that never happened at all. Built as
+            # a general classification, not a layberth special case, so the next
+            # oddity William mentioned can join it later without reopening this
+            # logic -- today the only source of "No Cargo" is a layberth zone.
+            st["is_non_commercial"] = st["activity"] == "No Cargo"
             st["zinfo"] = zinfo
             st["end_pos"] = max(pos[i] for i in st["events"])
             st["start_pos"] = min(pos[i] for i in st["events"])
@@ -554,7 +562,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             b_dep = next((ev.at[st["depart_idx"], "event_time"] for st in reversed(lg)
                           if st["depart_idx"] is not None), None)
 
-            waiting = inter = outbound = berth_h = 0.0
+            waiting = inter = outbound = berth_h = layberth_h = 0.0
             anchor_pairs, open_anchor = [], None
             for i in members:
                 if ev.at[i, "facility_type"] != "Anchorage":
@@ -589,18 +597,46 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                     inter += overlap_hours(t0, t1, b_arr, leg_last)
             for st in lg:
                 if st["arrive_idx"] is not None and st["depart_idx"] is not None:
-                    berth_h += hours(ev.at[st["arrive_idx"], "event_time"],
-                                     ev.at[st["depart_idx"], "event_time"]) or 0.0
+                    h = hours(ev.at[st["arrive_idx"], "event_time"],
+                             ev.at[st["depart_idx"], "event_time"]) or 0.0
+                    # Non-commercial (layberth) time is real elapsed time but not
+                    # cargo work -- William, 2026-08-19: "layberths don't need to
+                    # be considered in counts and fees, we just need to have it
+                    # time-wise attached to the leg and allocated as layberth
+                    # when doing time calcs / KPI." It moves out of berth_hours
+                    # into its own bucket rather than disappearing.
+                    if st["is_non_commercial"]:
+                        layberth_h += h
+                    else:
+                        berth_h += h
 
-            head = lg[0] if lg else None
+            # R5 prices off the leg's first WORKING berth, not its literal first
+            # stop (William, 2026-08-19): a layberth stop must not decide
+            # facility_type any more than it can open a split (§8a) or bill a
+            # fee (§8b) -- the same exclusion, extended to this one remaining
+            # place layberths still drove money. `head`/`zinfo` also back
+            # first_berth_zone/first_berth_facility/facility_type below, so this
+            # fixes what those columns report at the same time it fixes R5.
+            # Falls back to the leg's literal first stop only when every stop is
+            # non-commercial (a pure lay-up leg, which bills nothing regardless).
+            working = [st for st in lg if not st["is_non_commercial"]]
+            head = working[0] if working else (lg[0] if lg else None)
             zinfo = head["zinfo"] if head else {}
             # A leg can now mix a No Cargo (layberth) stop with a real cargo
             # stop -- §8a lets No Cargo join the leg in progress instead of
             # splitting it off. Real activity (Load/Discharge) always wins the
-            # leg's reported activity over No Cargo; only a leg with nothing
-            # but layberth stops reports No Cargo itself.
+            # leg's reported activity over No Cargo. Below that, an unresolved
+            # stop outranks No Cargo (William, 2026-08-19, §11.1a): "unknown"
+            # must not be overridden by a non-commercial label borrowed from a
+            # different stop in the leg -- only a leg with nothing but layberth
+            # stops (real_berth False below) reports No Cargo itself.
             real_acts = [st for st in lg if st["activity"] and st["activity"] != "No Cargo"]
-            act_src = real_acts[0] if real_acts else next((st for st in lg if st["activity"]), None)
+            if real_acts:
+                act_src = real_acts[0]
+            elif any(st["activity"] is None for st in lg):
+                act_src = None
+            else:
+                act_src = next((st for st in lg if st["activity"] == "No Cargo"), None)
             act = act_src["activity"] if act_src else None
             method = act_src["method"] if act_src else ("no_berth_stop" if not lg else "unresolved")
             # No fee on departing a layberth (William, 2026-08-19, §8b): a leg
@@ -646,7 +682,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                 "leg_hours": hours(ev.at[members[0], "event_time"], ev.at[members[-1], "event_time"]) if members else None,
                 "activity": act, "activity_method": method, "activity_conflict": conflict,
                 "activity_conflict_reason": conflict_reason, "draft_delta_ft": delta,
-                "berth_stop_count": len(lg),
+                "berth_stop_count": len([st for st in lg if not st["is_non_commercial"]]),
                 "geofence_artifact_events": sum(len(st["artifacts"]) for st in lg),
                 "first_berth_zone": head["zone"] if head else None,
                 "first_berth_facility": zinfo.get("facility"),
@@ -654,6 +690,7 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                 "berth_arrive_time": b_arr, "berth_depart_time": b_dep,
                 "waiting_hours": round(waiting, 2), "inter_berth_idle_hours": round(inter, 2),
                 "outbound_idle_hours": round(outbound, 2), "berth_hours": round(berth_h, 2),
+                "layberth_hours": round(layberth_h, 2),
                 "agency": m["agency"], "agency_source": m["agency_source"],
                 "agent_changed_in_leg": m["agent_changed"],
                 "cargo_group": cargo_group, "cargo": cargo, "cargo_source": cargo_source,
@@ -736,6 +773,16 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
 
         entry_draft = ev.at[first_i, "draft_ft"] if has_entry else None
         exit_draft = ev.at[last_i, "draft_ft"] if has_exit else None
+        # Non-commercial (pure lay-up) call, William 2026-08-19: "we can ignore
+        # them except for accounting for the time usage on the seq order of
+        # SWP-to-SWP KPI calcs" -- flagged, never deleted, so the row, its
+        # events and its place in the vessel's SWP-to-SWP sequence all stay on
+        # the spine. A call is non-commercial only when it actually visited a
+        # berth and every visit was non-commercial (layberth) time; a call that
+        # never reached a berth at all is a different, pre-existing category and
+        # stays 'commercial' (it just never bills).
+        all_non_commercial = bool(stops) and all(st["is_non_commercial"] for st in stops)
+        call_class = "layup" if all_non_commercial else "commercial"
         call_rows.append({
             "port_call_id": call_id, "vessel_key": vessel_key,
             "imo": ev.at[first_i, "imo"], "vessel_name": ev.at[first_i, "dim_vessel_name"],
@@ -747,7 +794,9 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
             "call_start": start_t, "call_end": end_t, "call_hours": hours(start_t, end_t),
             "call_status": status, "is_complete": status == "complete",
             "leg_count": leg_count, "is_split": leg_count > 1,
-            "berth_stop_count": len(stops),
+            "is_commercial_call": not all_non_commercial, "call_class": call_class,
+            "berth_stop_count": len([st for st in stops if not st["is_non_commercial"]]),
+            "layberth_hours": round(sum(lr["layberth_hours"] for lr in leg_rows[-leg_count:]), 2),
             "anchorage_stop_count": sum(1 for i in call if ev.at[i, "facility_type"] == "Anchorage"
                                         and ev.at[i, "action_src"] == "Arrive"),
             "event_count": len(call),
@@ -846,6 +895,20 @@ def validate(con, calls_df, legs_df, events_df, guards):
                 bool((legs_df.groupby("port_call_id").size() ==
                       calls_df.set_index("port_call_id").leg_count).all()))
 
+    # Non-commercial (layberth) time, William 2026-08-19: real elapsed time,
+    # excluded from berth_stop_count/berth_hours and moved into its own
+    # layberth_hours bucket instead -- reallocated, never dropped, so the
+    # call-level total must still equal the sum of its legs.
+    leg_agg = legs_df.groupby("port_call_id").agg(
+        berth_stop_count=("berth_stop_count", "sum"), layberth_hours=("layberth_hours", "sum"))
+    call_idx = calls_df.set_index("port_call_id")
+    guards.hard("call berth_stop_count is the sum of its legs'",
+                bool((leg_agg.berth_stop_count.reindex(call_idx.index) ==
+                      call_idx.berth_stop_count).all()))
+    guards.hard("call layberth_hours is the sum of its legs'",
+                bool((leg_agg.layberth_hours.reindex(call_idx.index).sub(
+                      call_idx.layberth_hours).abs() < 0.01).all()))
+
     counted = assigned.groupby("port_call_id").size()
     guards.hard("call event_count matches the spine",
                 bool((counted.reindex(calls_df.port_call_id).fillna(0).values ==
@@ -873,6 +936,13 @@ def validate(con, calls_df, legs_df, events_df, guards):
     guards.hard("call fee total is the sum of its legs",
                 abs(float(legs_df.agency_fee.fillna(0).sum()) -
                     float(calls_df.agency_fee_total.fillna(0).sum())) < 0.01)
+
+    # A pure lay-up call is flagged, not deleted (William, 2026-08-19) -- but
+    # it must never bill, exactly like it did before it had a name of its own.
+    layup_ids = set(calls_df.loc[calls_df.call_class == "layup", "port_call_id"])
+    layup_fee = float(legs_df.loc[legs_df.port_call_id.isin(layup_ids), "agency_fee"].fillna(0).sum())
+    guards.hard("no fee accrues on a non-commercial (layup) call",
+                layup_fee == 0.0, f"${layup_fee:,.0f} across {len(layup_ids):,} layup calls")
 
     # audit #2 §5: nothing previously asserted that a fee matches its vessel's
     # tier. Recompute independently from dim_vessel -- the vessel's current
@@ -957,6 +1027,10 @@ def validate(con, calls_df, legs_df, events_df, guards):
                 passed=no_agency == 0)
     long_calls = int((calls_df.call_hours > 180 * 24).sum())
     guards.soft("calls longer than 180 days", f"{long_calls:,}", passed=long_calls == 0)
+    layup = calls_df[calls_df.call_class == "layup"]
+    guards.soft("non-commercial (layup) calls",
+                f"{len(layup):,} of {len(calls_df):,} ({len(layup) / len(calls_df):.2%}); "
+                f"{layup.layberth_hours.sum():,.0f} hrs preserved on the spine, excluded from counts and fees")
     guards.soft("split calls", f"{int(calls_df.is_split.sum()):,} of {len(calls_df):,} "
                                f"({calls_df.is_split.mean():.1%})")
     return guards

@@ -7,6 +7,135 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
+## 2026-08-19 (session 3) — non-commercial time classification built: layberth out of counts/fees, R5 fixed, §11.1a resolved
+
+**Objective**: build the five rulings William gave at the close of the
+`mrtis-claris` review package's independent audit #2 session (recorded there,
+not yet carried back here): R5 prices off the leg's first *working* berth,
+layberth time moves into its own bucket instead of `berth_stop_count`/
+`berth_hours`, pure lay-up calls are flagged (not deleted), an unresolved stop
+outranks `No Cargo` for a leg's label, and all of it built as one general
+non-commercial-time classification rather than layberth-specific logic.
+
+Read `docs/BUILD.md`, the last two `docs/SESSION_LOG.md` entries, and
+`OPEN_QUESTIONS.md` §7, §8, §11, §12, §13, §14 in full per the standing
+ritual, then the handoff brief at the end of `mrtis-claris/SESSION_LOG.md`,
+which carried the evidence and dollar figures behind each ruling. MRTIS
+commit unchanged since the last session (`09e1cb63`).
+
+### Method
+
+Standing practice: scratch-copy rebuild and full reverification before
+touching the real repo. Zone Report CSVs and `fgis_source/` symlinked
+read-only into an isolated copy outside the repo; `scripts/`, `sql/`,
+`dictionaries/`, `docs/` copied so they could be edited freely. Rebuilt the
+core warehouse and FGIS match first (unmodified) to confirm the scratch copy
+reproduces the known-good baseline exactly ($272,167,500 / 40,245 legs /
+$349,625,500 frozen basis) before changing anything. Only then edited
+`scripts/build_port_calls.py` and `sql/schema_port_call.sql`, reran the
+port-call layer in the scratch copy, and cross-checked every headline figure
+independently in SQL — not read out of the build's own report — before
+applying the same two files to the real repo and rebuilding for real.
+
+### Built
+
+All five rulings landed in one pass, generalised as a single "non-commercial
+time" classification (per-stop `is_non_commercial = (activity == 'No
+Cargo')`), with layberth as its only current member:
+
+1. **R5 prices off the leg's first *working* berth** (§12.3.3.1 amended).
+   `head`/`zinfo` for a leg — which feed both `port_call_leg.facility_type`
+   and the `agency_fee_for()` call site — now come from the leg's first
+   non-layberth stop, falling back to the literal first stop only when every
+   stop is layberth.
+2. **`berth_stop_count`/`berth_hours` exclude layberth**, on both
+   `port_call_leg` and `port_call`; a new `layberth_hours` column (leg total
+   and call total) carries the excluded time instead of dropping it.
+3. **Pure lay-up calls are flagged, not deleted**: `port_call.
+   is_commercial_call` / `call_class = 'layup'`. Rows, events and SWP-to-SWP
+   timestamps stay on the spine exactly as before.
+4. **An unresolved stop outranks `No Cargo` for the leg's label** (§11.1a).
+   `build_frames()`'s leg-activity resolution now checks real activity, then
+   any unresolved stop, then (only if nothing else exists) `No Cargo`.
+5. Two new hard guardrails (call-level `berth_stop_count`/`layberth_hours`
+   reconcile to the sum of their legs'; no fee accrues on a non-commercial
+   call) plus a soft report line for non-commercial calls.
+
+### Found, while verifying — the `mrtis-claris` audit's own R5 estimate was incomplete
+
+Independent re-derivation in SQL (before and after the code change, using a
+throwaway copy of the unmodified script against the same rebuilt database)
+found the handoff brief's **"80 legs, +$440,000"** R5 estimate undercounts.
+That figure enumerated only 5 of the 14 `ops = Layberth` zones by name
+(Poland St, Perry Street, Buck Kreihs, Alabo St, Esplanade Ave) and never
+counted the five Violet Dock zones, despite the same write-up's own text
+confirming all 14 carry `facility_type = General Cargo`. The real population
+is **107** chargeable Bulk legs with a layberth first stop (not 80): **93**
+genuinely revert to the $10,500 base tier (**+$511,500**, not $440,000), and
+**14** stay at $5,000 because their first *working* berth is also,
+legitimately, a non-layberth General Cargo zone (e.g. Chalmette Slip, 7th
+Street, Globalplex) — those 14 are a correctness fix to *what's reported*,
+not to the amount. Full reconciliation, including the 6-leg overlap with
+ruling 4 (§11.1a), is in `OPEN_QUESTIONS.md` §12.3.3.1. The "389 stops / 379
+legs / 45,742 hours preserved" layberth-footprint figures, by contrast, were
+re-derived exactly as given once measured the same way the code measures them
+(dwell-bearing stops, not `layberth_hours > 0`) — that estimate held.
+
+### Verified (all guardrails pass; every figure independently re-derived in SQL)
+
+| Figure | Before | After |
+|---|---:|---:|
+| Billable total | $272,167,500 | **$272,679,000** |
+| Per-departure basis (frozen, §12.3.4) | $349,625,500 | **$349,625,500** — unchanged |
+| Port calls | 40,170 | 40,170 total, **40,028** commercial (142 flagged) |
+| Legs | 41,804 | 41,804 total, **41,662** commercial |
+| `No Cargo` legs billing | 54 / $281,750 | **0** labelled so (all relabel to unresolved); fee for that population is $314,750, not $281,750, because 6 of the 54 also fall inside the R5 fix above |
+| Lay-up time preserved | — | **23,390 hrs / 974.6 (≈975) vessel-days**, all 142 calls `call_status = 'complete'` |
+| Layberth reallocated | — | **45,742 hrs, 389 stops, 379 legs** off `berth_hours` into `layberth_hours` |
+
+### Decided without stopping to ask (technical, not a business-rule fact)
+
+- **§13.1 stays deferred to phase 2**, not bundled with this session's build.
+  It touches the same 14 (soon 29) General Cargo zones but a different
+  decision (activity resolution, not which stop is "first working"); the two
+  code paths are independent and this session's verification holds regardless
+  of §13's build state. Reasoning recorded in `OPEN_QUESTIONS.md` §13's
+  "Still open" note for confirmation.
+- Trusted the re-derived database over the `mrtis-claris` audit's own
+  write-up where the two disagreed (the R5 population above), consistent
+  with this project's standing practice of re-deriving every claim rather
+  than reading it out of a prior report.
+
+### Docs updated
+
+`OPEN_QUESTIONS.md` §7.4 (ruled, Gen=Bulk, no figure moves), §8 (extended/
+generalised into the non-commercial-time classification), §11.1 (ruled (a),
+built, figure corrected $413,000 → $281,750-then-$314,750 with the overlap
+explained), §11.5 (schema comment's stale "~12%" replaced with a pointer to
+the auto-generated report instead of another number that will drift), §12.3.3.1
+(the first-working-berth amendment, built, with the corrected $511,500/93-leg
+figures and the audit-undercount finding), §14 (pure lay-up exclusion answers
+one sub-question); `PORT_CALL_SPEC.md` §3 (refreshed resolution percentages),
+§4 (rewritten "non-commercial time" section), §6 (`layberth_hours`);
+`sql/schema_port_call.sql` (new columns, corrected comments). Sample CSVs in
+the working tree (`sample_port_calls*.csv`) predate this session and were not
+regenerated — no `--sample`/`--sample-months` flag was passed.
+
+### Next session starts by
+
+Carrying this back to `mrtis-claris`: its own `SESSION_LOG.md` handoff brief
+is now superseded by the corrected figures here ($272,679,000 / 93 legs, not
+$272,607,500 / 80 legs) — re-export, re-run charts and reports, and clear
+audit #2's A4-A14 documentation findings while there. A **third audit** was
+already flagged as due once §12 and the §11 rulings landed; both have now
+happened (§12 in session 2, §11.1/§8-extension/§12.3.3.1 here) — due whenever
+William wants to size it. §13 (General Cargo / buoy sequencing, phase 2),
+§13.4 (buoy `cargo_group`), full §14 (per-agent counts, scope/timing still
+open), and §12.3.2 (three named types with zero traffic) remain open,
+unchanged from before this session.
+
+---
+
 ## 2026-08-19 (session 2) — §12 fee schedule built and deployed; missing tier guardrail added
 
 **Objective**: rule on and build the revised agency fee schedule captured

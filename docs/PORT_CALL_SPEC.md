@@ -133,8 +133,11 @@ Evidence order, strongest first.
 
 `activity_method` records which rung answered, on every leg.
 
-Current split: dictionary 35.7%, draft 46.8%, FGIS 0.8%, unresolved 13.4%, and
-3.3% of legs never reached a berth at all. **83.3% resolved.**
+Current split (post the 2026-08-19 non-commercial-time rebuild — see §4):
+dictionary 35.9%, draft 46.1%, FGIS 0.8%, unresolved 13.8%, and 3.4% of legs
+never reached a berth at all. **82.8% resolved.** The `dictionary` row's
+`No Cargo` count is now only the 142 pure lay-up legs — a mixed layberth stop
+no longer contributes a `No Cargo` label at the leg level; see §4.
 
 How well the draft performs depends entirely on the ship, exactly as William
 predicted: the ambiguous facilities are the buoys, which serve larger vessels
@@ -200,22 +203,68 @@ recorded type (an unrecorded type must not be read as an excluded one);
 **4.1% of calls are split calls** (down from 4.4% once layberth stops stopped
 manufacturing splits — OPEN_QUESTIONS §8a).
 
-### `No Cargo` (layberth) never splits, and never bills on its own
+### Non-commercial time — layberth never splits, never bills, never counts
 
-William's ruling, 2026-08-19 (OPEN_QUESTIONS §8): `No Cargo` (a stop at one of
-the 14 zones `dictionaries/zone_facility.csv` marks `ops = Layberth`, "no cargo
-ever takes place") is not a cargo job, so it cannot be the discharge-then-load
-boundary the split rule is built on. It is treated exactly like an unresolved
-stop for splitting purposes — it joins the leg in progress and never becomes
-the leg's `cur_activity`, so a real Discharge → No Cargo → Load sequence still
+William's ruling, 2026-08-19 (OPEN_QUESTIONS §8, generalised the same day):
+*"layberths don't need to be considered in counts and fees, we just need to
+have it time-wise attached to the leg and allocated as layberth when doing
+time calcs / KPI."* A stop at one of the 14 zones
+`dictionaries/zone_facility.csv` marks `ops = Layberth` ("no cargo ever takes
+place") resolves to `activity = 'No Cargo'` and is **non-commercial time**:
+real elapsed time, kept on the spine and attached to its leg, but excluded
+from every count and every fee. Built as a general classification (`ops =
+Layberth` is simply its first member), not a layberth special case, so a
+future non-commercial oddity can join it without reopening this logic.
+
+**It never splits.** `No Cargo` cannot be the discharge-then-load boundary the
+split rule is built on — it joins the leg in progress and never becomes the
+leg's `cur_activity`, so a real Discharge → No Cargo → Load sequence still
 splits on the Discharge/Load boundary as if the layberth stop were not there.
 
-It follows the same rule on the fee: **no fee accrues on departing a layberth.**
-A leg bills only if it did real (non-layberth) work somewhere. A leg of nothing
-but layberth stops — a pure lay-up or repair call — accrues nothing, exactly
-like a call that never berthed at all. A leg that mixes a layberth stop with a
-genuine other berth (e.g. bunkers at a refinery, activity unresolved) still
-bills as it always did; only the layberth stop itself is fee-exempt.
+**It never bills, on itself or on the leg's label.** No fee accrues on
+departing a layberth: a leg bills only if it did real, non-layberth work
+somewhere. Below that, an **unresolved stop outranks `No Cargo` for the leg's
+label** (William, 2026-08-19, OPEN_QUESTIONS §11.1a): a layberth stop
+elsewhere in the leg must not overwrite a genuine "we don't know" with a
+non-commercial label borrowed from a different stop. Only a leg with nothing
+but layberth stops reports `No Cargo` itself — every other leg reports its
+real activity if one resolved, otherwise `NULL`/unresolved. (Before this
+ruling, 54 legs reported `No Cargo` while billing in full for real work done
+at an unresolved berth elsewhere in the leg — a genuine contradiction between
+the label and the fee. They now report `NULL`, still bill exactly as before.)
+
+**It never counts toward `berth_stop_count` or `berth_hours`.**
+`port_call_leg.berth_stop_count`/`.berth_hours` and the same columns on
+`port_call` count only real (non-layberth) berth work; layberth dwell moves
+into its own `layberth_hours` column on both tables (leg total and call
+total) rather than disappearing. A leg or call that is nothing but layberth
+stops now reads `berth_stop_count = 0` — the same as a call that never
+reached a berth at all — so the two are told apart by `layberth_hours > 0`,
+not by `berth_stop_count`.
+
+**It never decides R5's price.** R5 (§12.3.3.1, dry bulk at a General Cargo
+berth) prices off the leg's first berth. That resolution now skips layberth
+stops the same way splitting does — `first_berth_zone`, `first_berth_facility`
+and `facility_type` all come from the leg's first *working* (non-layberth)
+stop, falling back to the literal first stop only when every stop in the leg
+is layberth. Before this fix a bulk carrier that laid up at a repair yard
+before loading at a real elevator had its fee (and its reported berth) read
+from the repair yard; **93 legs** move off the $5,000 General Cargo tier back
+to the $10,500 Bulk base tier (+$511,500 — see OPEN_QUESTIONS §12.3.3.1 for
+why this is $511,500, not the $440,000 first estimated), and a further 14
+legs stay at $5,000 but are now correctly attributed to a genuine General
+Cargo working berth rather than the layberth that happened to come first.
+
+**Pure lay-up calls are flagged, never deleted.** A call whose every berth
+visit is non-commercial (`port_call.call_class = 'layup'`,
+`is_commercial_call = FALSE`) does not count as a port call and accrues no
+fee — but the row, its events and its place in the vessel's SWP-to-SWP
+sequence all stay on the spine exactly as before, so the time is never lost
+(William, 2026-08-19: *"if the ship was at layberth 3 days, how do you
+explain the time gap?"*). A call that never reached a berth at all is a
+different, pre-existing category and is unaffected — it stays
+`is_commercial_call = TRUE`. **142 calls, 23,390 hours (975 vessel-days)**
+preserved on the spine, excluded from every count and fee.
 
 ### Which leg an event belongs to
 
@@ -268,7 +317,13 @@ agency differs from the agent written on the row.
 - `outbound_idle_hours` — dwell after the last sailing. The vessel is on its way
   out, not waiting on a dock. Reported separately so it can never be counted as
   waiting.
-- `berth_hours` — hours alongside.
+- `berth_hours` — hours alongside doing real, non-layberth cargo work.
+- `layberth_hours` — hours alongside at a non-commercial (layberth) stop
+  (§4). Real elapsed time, reported separately from `berth_hours` rather than
+  folded into it, so a "days alongside" or "berth productivity" KPI is never
+  inflated by a repair-yard stay that did no cargo work. Also totalled on
+  `port_call`. **45,742 hours (389 stops, 379 legs)** move out of
+  `berth_hours` into this bucket under the 2026-08-19 rebuild.
 
 Dwell is attributed by **overlap** with those windows, not by which side of the
 berth arrival an anchorage happened to start on. The pilot sheets routinely
