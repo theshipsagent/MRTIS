@@ -48,23 +48,71 @@ RAW_COLUMNS = ["IMO", "Name", "Action", "Time", "Zone", "Agent", "Type", "Draft"
 AGENCY_FEE_BULK = 10_500.0
 AGENCY_FEE_OTHER = 3_500.0
 
+# William's revised fee schedule (2026-08-19, §12 of OPEN_QUESTIONS.md) --
+# six rules layered on top of the two-tier schedule above. R1-R4 key off the
+# ships register's own ship_type, not vessel_type_canonical (§12.3.1: the
+# register is authoritative -- these are register vocabulary values, and
+# Ro-Ro Cargo Ship / Vehicles Carrier have no equivalent in the 7-value
+# canonical vocabulary at all). R5 is priced by the leg's first berth, the
+# only berth-dependent rule (§12.3.3), and outranks R1-R4 if a vessel could
+# ever satisfy both (§12.3.3.3), though no vessel can today.
+SHIP_TYPE_FEE_TIERS = {
+    "Passenger/Cruise": 2_500.0,                                 # R1
+    "Ro-Ro Cargo Ship": 1_000.0,                                 # R2
+    "Vehicles Carrier": 1_000.0,                                 # R2
+    "Container Ship (Fully Cellular)": 750.0,                    # R3
+    "Container Ship (Fully Cellular/Ro-Ro Facility)": 750.0,     # R3
+    "Refrigerated Cargo Ship": 5_000.0,                          # R4
+}
+# Consulted only when the vessel has no register row at all (§12.3.1's
+# approved hybrid) -- the canonical equivalent for the three rules that have
+# one. Ro-Ro Cargo Ship / Vehicles Carrier have no canonical equivalent and
+# stay unreachable for a vessel with no register row, by design.
+CANONICAL_FEE_FALLBACK = {
+    "Passenger": 2_500.0,   # R1
+    "Container": 750.0,     # R3
+    "Reefer": 5_000.0,      # R4
+}
+AGENCY_FEE_BULK_GENERAL_CARGO = 5_000.0  # R5
+
 # Facility types that are NOT a berth -- a vessel departing these has not
 # worked cargo, so no agency fee accrues. Everything else in the zone
 # dictionary is a real berth of some kind.
 NON_BERTH_FACILITY_TYPES = {"Anchorage", "Pilot Station"}
 
 
-def agency_fee_for(vessel_type_canonical, ship_type_group, imo):
+def agency_fee_for(vessel_type_canonical, ship_type_group, imo, ship_type=None, facility_type=None,
+                    apply_2026_tiers=False):
     """Agency fee in USD for a sailing by this vessel, or None if no fee accrues.
 
-    Priority:
-      1. The Zone Report's own Type, canonicalized -- 'Bulk' is the higher tier,
+    `apply_2026_tiers=False` (the default) preserves the pre-§12 two-tier
+    schedule exactly, byte-for-byte -- this is what the per-departure basis
+    (`fact_zone_event.agency_fee`, built here in build_db.py) uses, frozen per
+    William's ruling (2026-08-19, §12.3.4). Only `build_port_calls.py`'s
+    leg-level fee passes `apply_2026_tiers=True` (with `ship_type` and
+    `facility_type`), to price the six §12 rules first. This is an explicit
+    flag rather than inferring "new tiers wanted" from ship_type being present,
+    because build_db.py's call never passes ship_type at all -- inferring from
+    its absence would silently apply §12's canonical fallback (Passenger /
+    Container / Reefer) to the frozen basis too, which is exactly the bug this
+    flag exists to prevent.
+
+    Priority when apply_2026_tiers=True:
+      0. R5: a dry bulk vessel calling a General Cargo facility at the leg's
+         first berth. $5,000.
+      1. R1-R4: the register's own ship_type against SHIP_TYPE_FEE_TIERS.
+      1b. R1-R4 fallback (only when ship_type is blank -- no register row at
+          all): the canonical equivalent, where one exists, against
+          CANONICAL_FEE_FALLBACK.
+
+    Priority always (the pre-§12 schedule, and the fallback below §12's rules):
+      2. The Zone Report's own Type, canonicalized -- 'Bulk' is the higher tier,
          every other known type (tanker, gas, container, cruise, reefer) the lower.
-      2. Where Type was never recorded for the vessel, fall back to the ships
+      3. Where Type was never recorded for the vessel, fall back to the ships
          register: a 'Bulk Carrier-*' group is the higher tier. This recovers
          real Capesize/Kamsarmax bulkers that would otherwise be under-billed --
          the register knows them even though the Zone Report Type is blank.
-      3. A vessel with NO usable IMO and no type from either source is not an
+      4. A vessel with NO usable IMO and no type from either source is not an
          ocean vessel being agented -- it is a tug, workboat, naval or
          government craft (observed: 'Usace Mat Sink Unit', 'French Warship',
          'Cg Eagle', 'Shop'). No fee accrues; agency_fee stays NULL.
@@ -72,6 +120,15 @@ def agency_fee_for(vessel_type_canonical, ship_type_group, imo):
     A vessel whose IMO merely fails its check digit still bills at the lower
     tier -- a corrupted IMO is a typo on a real ship, not the absence of one.
     """
+    if apply_2026_tiers:
+        has_ship_type = isinstance(ship_type, str) and bool(ship_type)
+        if vessel_type_canonical == "Bulk" and facility_type == "General Cargo":
+            return AGENCY_FEE_BULK_GENERAL_CARGO
+        if has_ship_type and ship_type in SHIP_TYPE_FEE_TIERS:
+            return SHIP_TYPE_FEE_TIERS[ship_type]
+        if not has_ship_type and vessel_type_canonical in CANONICAL_FEE_FALLBACK:
+            return CANONICAL_FEE_FALLBACK[vessel_type_canonical]
+
     if vessel_type_canonical == "Bulk":
         return AGENCY_FEE_BULK
     if isinstance(vessel_type_canonical, str) and vessel_type_canonical:

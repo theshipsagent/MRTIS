@@ -7,6 +7,97 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
+## 2026-08-19 (session 2) — §12 fee schedule built and deployed; missing tier guardrail added
+
+**Objective**: rule on and build the revised agency fee schedule captured
+(not built) at the end of the previous session's audit — `docs/OPEN_QUESTIONS.md`
+§12 — and, per the hard ordering constraint from audit #2 §5, add the missing
+guardrail before touching the tiers at all.
+
+### Decided (by William, all 2026-08-19 — see OPEN_QUESTIONS §12.3, §13, §14)
+
+1. **§12.3.1**: register `ship_type` is authoritative for R1-R4; the canonical
+   Zone-Report type is the fallback only for vessels with no register row.
+2. **§12.3.3**: R5 (dry bulk at a General Cargo berth) is priced by the leg's
+   **first** berth, not any berth or the last berth touched — reached after
+   several rounds of clarification. The billing unit stays the port call
+   regardless of how many berths are visited (explicitly confirmed for
+   tankers, which can call 4-6 berths in one visit); the only thing that ever
+   produces a second fee within one port call remains the existing
+   discharge→load agent-turnover split, unchanged from §7/§8. "Dry bulk" =
+   `vessel_type_canonical = 'Bulk'`, same as the base tier. R5 outranks R1-R4
+   if a vessel ever satisfies both (currently impossible).
+3. **§12.3.4**: the per-departure comparison basis (`fact_zone_event.agency_fee`)
+   stays frozen at the pre-ruling two-tier schedule; only the leg basis
+   (what actually bills) gets the six new rules.
+4. **§13 (new, raised this session)**: General Cargo berths are discharge-only
+   by dictionary; a buoy stop before a confirmed Load is Discharge by
+   elimination; two ambiguous buoy stops in sequence are Discharge-then-Load
+   by position (empirically checked against draft delta before accepting —
+   122 confirming, 0 contradicting, 162 with no signal either way, 23 genuine
+   exceptions attributed to rare weather/evacuation interruptions and
+   deliberately not scripted for — flagged by a guardrail instead, human
+   reviewed before reports print). **Ruled but explicitly parked to a "phase
+   2"**, along with §13.4 (buoy cargo_group) and §14 (per-agent call counts,
+   raised, timing/scope still open) — none of these are built.
+
+### Done
+
+- **The missing guardrail** (audit #2 §5: nothing asserted a fee matches its
+  vessel's tier) — added to `validate()` in `build_port_calls.py`, verified in
+  a scratch copy to actually catch an injected mismatch, then applied. This
+  landed *before* the tier change per the session's hard ordering constraint.
+- **§12's six-rule fee schedule** — `SHIP_TYPE_FEE_TIERS`,
+  `CANONICAL_FEE_FALLBACK`, `AGENCY_FEE_BULK_GENERAL_CARGO` added to
+  `build_db.py`; `agency_fee_for()` extended with optional `ship_type`,
+  `facility_type`, and `apply_2026_tiers` parameters so every existing caller
+  is unaffected unless it opts in.
+- **A real bug caught mid-build, before the database ever saw it**: the first
+  version inferred "apply the new tiers" from whether `ship_type` was passed,
+  which silently leaked the R1/R3/R4 canonical fallback into the frozen
+  per-departure basis (`build_db.py`'s own call never passes `ship_type`),
+  moving it from $349,625,500 to $339,708,750. The tier guardrail didn't
+  catch it — it made the same mistake independently. Only cross-checking
+  against the known historical total caught it. Fixed with an explicit
+  `apply_2026_tiers` flag defaulting to `False`.
+- Verified in a scratch copy per standing practice, full chain rebuilt
+  (`build_db.py` → `build_fgis_match.py` → `build_port_calls.py`), all
+  guardrails pass, figures matched exactly against independently re-derived
+  SQL before being trusted. Then rebuilt for real.
+- `docs/OPEN_QUESTIONS.md` §12 (all sub-decisions, marked built and verified),
+  §13, §14 written up in full.
+
+### Found
+
+- Confirmed `github.com/theshipsagent/MRTIS` is a **public** repository.
+  William's call: the fee figures are modeled/estimated, industry-standard
+  numbers, not confidential or sensitive in any capacity — no action needed.
+
+### Figures — both re-derived independently from the database, not read out of the build's own reporting
+
+- **Leg basis (what bills): $298,868,500 → $272,167,500** (−$26,701,000,
+  −8.9%) over 40,245 chargeable legs.
+- **Per-departure basis: $349,625,500**, unchanged.
+- Every guardrail passes, including the new "fee matches its vessel's tier"
+  at 0 mismatches.
+
+### Next session starts by
+
+**Phase 2**, if/when William wants to size it: §13's build (General Cargo /
+buoy activity-resolution rules — reaches split detection, so needs its own
+scratch rebuild and reverification of every downstream figure before
+trusting it), §13.4 (buoy cargo_group), §14 (per-agent call counts — timing
+and scope still undecided). A **third audit** was already flagged as due
+once §12 and the §11 rulings land; §11 (54 `No Cargo` legs that bill anyway,
+and §11.2-11.4) was not reached this session and is still open.
+
+Separately, William raised wanting to explore a Claris/FileMaker clone of
+this pipeline (or a report layer on top of it), referencing the same having
+been done for the Ships-Register project MRTIS pulls its register from —
+not scoped yet, picked up at the end of this session.
+
+---
+
 ## 2026-08-19 — Ships register refreshed to the full world-fleet pull
 
 **Objective**: §9 (extending the register to tankers/gas/containers) — check

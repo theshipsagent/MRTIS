@@ -633,7 +633,10 @@ def build_frames(ev, calls, unassigned, zdict, agent_map, aliases, fgis, guards,
                                  if pd.notna(ev.at[i, "agency_fee"]))
             fee = agency_fee_for(ev.at[first_i, "vessel_type_canonical"],
                                  ev.at[first_i, "ship_type_group"],
-                                 ev.at[first_i, "imo"]) if lg and real_berth else None
+                                 ev.at[first_i, "imo"],
+                                 ship_type=ev.at[first_i, "ship_type"],
+                                 facility_type=zinfo.get("facility_type"),
+                                 apply_2026_tiers=True) if lg and real_berth else None
             leg_id = f"{call_id}-L{j + 1}"
             leg_rows.append({
                 "leg_id": leg_id, "port_call_id": call_id, "leg_seq": j + 1, "leg_count": leg_count,
@@ -870,6 +873,29 @@ def validate(con, calls_df, legs_df, events_df, guards):
     guards.hard("call fee total is the sum of its legs",
                 abs(float(legs_df.agency_fee.fillna(0).sum()) -
                     float(calls_df.agency_fee_total.fillna(0).sum())) < 0.01)
+
+    # audit #2 §5: nothing previously asserted that a fee matches its vessel's
+    # tier. Recompute independently from dim_vessel -- the vessel's current
+    # register/canonical identity -- rather than re-reading the same
+    # event-snapshot fields the fee was originally priced from, so this
+    # actually catches drift (a stale event-level type, a tier-table or
+    # agency_fee_for() regression), not just a self-check against its own inputs.
+    # facility_type comes from the leg itself (legs_df), not dim_vessel -- R5
+    # (§12) is the one rule priced by the leg's first berth, not the vessel.
+    vessel_tiers = con.execute(
+        "select vessel_key, vessel_type_canonical, ship_type_group, imo, ship_type from dim_vessel"
+    ).df()
+    fee_check = legs_df[legs_df.agency_fee.notna()].merge(vessel_tiers, on="vessel_key", how="left")
+    fee_check["expected_fee"] = fee_check.apply(
+        lambda r: agency_fee_for(r["vessel_type_canonical"], r["ship_type_group"], r["imo"],
+                                 ship_type=r["ship_type"], facility_type=r["facility_type"],
+                                 apply_2026_tiers=True), axis=1)
+    fee_mismatch = fee_check[fee_check.expected_fee.isna() |
+                             ((fee_check.agency_fee - fee_check.expected_fee).abs() >= 0.01)]
+    guards.hard("fee matches its vessel's tier",
+                len(fee_mismatch) == 0,
+                f"{len(fee_mismatch):,} legs where agency_fee disagrees with agency_fee_for() "
+                f"recomputed from the vessel's current dim_vessel record")
 
     fee_src = float(src.agency_fee.fillna(0).sum())
     fee_out = float(events_df.agency_fee.fillna(0).sum())

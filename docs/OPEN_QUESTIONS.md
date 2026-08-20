@@ -623,7 +623,7 @@ Recorded here so they are not lost; none needs a decision:
 
 ---
 
-## 12. Agency fee — vessel-type and berth-type tiers — PENDING IMPLEMENTATION, William, 2026-08-19
+## 12. Agency fee — vessel-type and berth-type tiers — BUILT AND VERIFIED, 2026-08-19
 
 William's instruction, verbatim:
 
@@ -707,6 +707,10 @@ Two ways out; this is the decision:
 Recommendation to consider: (b) with (a) as the fallback when the register has
 no row — but William should rule.
 
+**RESOLVED, William, 2026-08-19**: (b) — register `ship_type` is authoritative;
+`vessel_type_canonical` is the fallback only for vessels with no register row
+(9 vessels with chargeable legs today, 12 legs, $63,000; 63 vessels register-wide).
+
 #### 12.3.2 Three of the six named types have no traffic
 
 `Ro-Ro Cargo Ship`, `Vehicles Carrier` and
@@ -750,6 +754,27 @@ vessel-only rules never had to answer:
    precedence should be stated rather than left to the accident that they are
    disjoint.
 
+**RESOLVED, William, 2026-08-19**:
+
+1. **First berth of the leg** decides R5 (`port_call_leg.facility_type`) —
+   **3,112 legs, $32,676,000 today → $15,560,000 (−$17,116,000)**. Confirmed
+   after working through the billing-unit question directly: the leg/port-call
+   stays the billing unit regardless of how many berths it touches (explicitly
+   called out for tankers, which can call 4-6 berths in one visit and must
+   still bill once) — the *only* thing that ever produces a second fee within
+   one port call is the existing discharge→load turnover split (a genuine
+   change of agent, inbound vs outbound), unchanged from §7/§8. R5 does not
+   introduce any new per-berth or per-stop billing; it only decides the
+   *amount* using the leg's first berth.
+2. **Dry bulk = `vessel_type_canonical = 'Bulk'`** — same definition the
+   $10,500 base tier already uses. Not a register-only match.
+3. **R5 wins over R1-R4** if a vessel ever satisfies both (currently
+   impossible — a Bulk vessel is never also Passenger/Container/Reefer — but
+   now stated by construction rather than left to that accident).
+
+This restores the original §12.2 indicative table exactly — no change to the
+headline **−$26,701,000 → $272,167,500** figure.
+
 #### 12.3.4 Does this apply to the per-departure comparison basis too?
 
 `fact_zone_event.agency_fee` is built by the same `agency_fee_for()` in
@@ -762,6 +787,43 @@ defensible:
 - **Change the leg basis only** — the benchmark is preserved, but the two bases
   then differ by pricing *and* by counting rule, and the 17.0% over-bill figure
   becomes a mixture of two effects rather than one.
+
+**RESOLVED, William, 2026-08-19**: leave the per-departure basis frozen.
+`fact_zone_event.agency_fee` stays priced at the old two-tier schedule
+(Bulk $10,500 / Other $3,500) and $349,625,500 remains the fixed pre-ruling
+benchmark. Only `agency_fee_for()`'s *leg-level* callers (§12's new tiers)
+change; `build_db.py`'s per-event fee computation is untouched. This also
+sidesteps the structural mismatch noted above — R5 has no meaning on a table
+where a departure carries exactly one berth.
+
+All of §12.3 is now resolved.
+
+### Built and verified, 2026-08-19
+
+Implemented in `scripts/build_db.py` (`SHIP_TYPE_FEE_TIERS`,
+`CANONICAL_FEE_FALLBACK`, `AGENCY_FEE_BULK_GENERAL_CARGO`, and `agency_fee_for()`
+extended with optional `ship_type`, `facility_type`, and `apply_2026_tiers`
+parameters) and `scripts/build_port_calls.py` (the leg-level fee call site now
+passes all three; the tier guardrail added earlier this session updated to
+match). Verified in a scratch copy per standing practice before touching the
+real repo, then rebuilt for real (`build_db.py` → `build_fgis_match.py` →
+`build_port_calls.py`) once confirmed clean.
+
+**A real bug was caught mid-build, before it reached the database.** The
+first version inferred "apply the new tiers" from whether `ship_type` was
+passed at all — but `build_db.py`'s own per-departure fee computation never
+passes `ship_type` (by design, §12.3.4), so that inference silently applied
+the R1/R3/R4 canonical fallback to the frozen basis too, moving it from
+$349,625,500 to $339,708,750. The tier guardrail didn't catch it (it made the
+same mistake independently, so both sides agreed with each other) — only
+cross-checking against the known-good historical total caught it. Fixed with
+an explicit `apply_2026_tiers` flag, defaulting to `False`, so the frozen
+basis is byte-for-byte unaffected regardless of what else changes upstream.
+
+**Final verified figures**, both matching the ruled numbers exactly:
+- Leg basis: **$272,167,500** over 40,245 chargeable legs (was $298,868,500).
+- Per-departure basis: **$349,625,500**, unchanged, per §12.3.4.
+- All guardrails pass, including "fee matches its vessel's tier" at 0 mismatches.
 
 Note R5 cannot be expressed on `fact_zone_event` in the same way regardless: that
 table charges per *departure*, and a departure has exactly one berth, so
@@ -776,9 +838,132 @@ fee. 40 legs, +$60,000. Flagged only because every other rule cuts.
 
 1. Rule 12.3.1 (which column the rules key off) — everything else depends on it.
 2. Rule 12.3.3 (R5's three sub-decisions).
-3. Rule 12.3.4 (one basis or both).
+3. Rule 12.3.4 (one basis or both) — **still open**.
 4. Implement in `agency_fee_for()`; the tier table should move out of the
    function body into a declared mapping, since it is now six rules rather than two.
 5. **Add the value-level guardrails audit #2 §5 found missing before changing the
    tiers** — there is currently no check that a fee matches its vessel's tier, so
    a mistake in this change would not be caught by any guardrail.
+
+---
+
+## 13. Activity resolution — General Cargo and buoy sequencing — RULED, William, 2026-08-19, BUILD TIMING OPEN
+
+Raised while confirming §12.3.3.1 (which berth decides R5). Not part of §12 —
+this changes `resolve_activity()`'s evidence order in `scripts/build_port_calls.py`,
+which decides Discharge vs. Load vs. unresolved on a stop, which decides where a
+Bulk call's leg *splits*. It therefore reaches further than the fee tiers: it can
+move the 1,787-split / 4.4%-of-calls baseline that every §12 dollar figure sits on
+top of. **Not yet built or rebuilt against — needs its own scratch-copy rebuild
+and reverification before any downstream number (splits, legs, R1-R5 dollars) is
+trusted under it.**
+
+### 13.1 General Cargo berths are discharge-only
+
+**Ruling**: every General Cargo zone is discharge, by dictionary, full stop —
+same standing as an Elevator being load-only. William: *"many of the ships
+discharging will come out of clearly marked discharge only terminals and for
+consistence, we can consider all general cargo berths as discharge only."*
+
+Today, 15 of the 29 `dictionaries/zone_facility.csv` rows with
+`facility_type = General Cargo` have a blank `ops` (14 more are correctly
+`Layberth`) — those 15 currently fall through to FGIS / draft delta / unresolved
+like any ambiguous zone, rather than being dictionary-decided. Implementation:
+set `ops = Discharge` on those 15 rows.
+
+Does **not** change `facility_type`, so it does not touch the R5 dollar figures
+in §12.3.3 (R5 keys off `facility_type = General Cargo`, not `activity`) — this
+is a separate axis. What it *does* change is which stops resolve to Discharge
+vs. stay unresolved/draft-delta-guessed, which feeds split detection.
+
+### 13.2 Buoy sequencing — a stop before a confirmed Load must be Discharge
+
+**Ruling**: a buoy stop (ambiguous `ops` — 33 of the 39 `Mid-Stream` zones in
+the dictionary, essentially all the raw buoy zones) that precedes, later in the
+same visit, a stop that resolves to Load via dictionary or FGIS must itself be
+Discharge — regardless of what its own draft delta says. Physical reasoning,
+William: these bulk carriers never load twice in one visit; the pattern is
+always discharge → (anchor to clean/inspect, non-working) → load → sail, never
+the reverse. A confirmed Load downstream pins the upstream buoy as Discharge by
+elimination.
+
+### 13.3 Buoy-to-buoy (both stops ambiguous) — first is Discharge, second is Load
+
+**Ruling**: when a visit has no dictionary/FGIS anchor at all — two consecutive
+buoy stops, both ambiguous — the first (chronologically) is Discharge and the
+second is Load, by position alone. Physical reasoning, William: a bulk carrier
+never discharges at two buoys or loads at two buoys in one visit — there is
+exactly one discharge buoy and one load buoy when buoys are involved, so
+sequence order alone resolves it, no draft delta needed.
+
+**Checked against the data before accepting this** (re-derived from
+`data/db/mrtis.duckdb`, read-only, no rebuild): of 307 bulk-carrier calls with
+exactly two ambiguous-buoy stops and usable draft data —
+- **122** show the expected pattern (first buoy drafts down, second drafts up).
+- **0** show the reverse (never load-then-discharge by draft signal).
+- **162** show no measurable draft change at one or both stops — today these
+  get no evidence and mostly go unresolved; the position rule resolves all of
+  them with nothing to contradict it.
+- **23** (7.5%) are a real exception: both stops show a sizeable, non-noise
+  draft change in the *same* direction (e.g. −19/−3, both look like discharge;
+  11/11, both look like load) — the same magnitude range as the 122 clean
+  cases, not AIS jitter.
+
+**William's ruling on the 23 exceptions**: real but incredibly rare —
+attributed to events like a hurricane/USCG evacuation order forcing a vessel to
+leave mid-discharge or mid-load and return. *"I don't think we can script for
+that, will be a human in the loop adjustment before printing reports."*
+**Not scripted.** Instead: add a guardrail that flags disagreement between the
+position-based rule and a real (non-trivial) draft delta at the same stop —
+the same pattern `resolve_activity()` already uses for dictionary-vs-draft
+conflicts (`conflict_reason`) — so these surface for manual review before a
+report prints, rather than being silently overridden or silently missed.
+
+### 13.4 Cargo group on buoy stops — PARKED to phase 2, William, 2026-08-19
+
+**Ruling, deferred deliberately**: once a buoy stop's activity is resolved by
+§13.2/§13.3 (the sequencing rule, not draft delta), also set that stop/leg's
+`cargo_group` to `Bulk`, paired with the resolved Discharge/Load activity —
+scoped only to buoys resolved this way, not a general cargo_group change.
+
+Not a major rewire on its own (cargo_group is already assigned alongside
+activity in the leg-building loop; this just adds a value when the method is
+the new sequencing rule) — but it is a refinement on top of §13, which is
+itself not built yet, so it is naturally part of the same phase-2 work rather
+than separate. William: park it, "return to build phase 2 ... additional
+refinements once we have the missing data sets to round it out."
+
+### Phasing, William, 2026-08-19
+
+- **Phase 1** (this session): the missing tier-guardrail (§5 of audit #2 —
+  **built and verified**), and §12's fee-tier rulings (§12.3.1-12.3.4, all
+  **resolved** — implementation still pending).
+- **Phase 2** (deferred, pending additional data sets): §13 (General Cargo /
+  buoy sequencing) build and rebuild-reverification, §13.4 (buoy cargo_group),
+  §14 (per-agent counts), §12.3.2 (three named types with zero traffic).
+
+### Still open
+
+- §13 **build timing** — dismissed twice when asked (implement now vs. log and
+  scope for a dedicated session); now explicitly phase 2 per the phasing
+  ruling above. Needs a scratch-copy rebuild and full reverification of
+  splits/legs/dollars regardless of when it happens, per standing practice.
+- §12.3.2 (three named types with zero traffic, `General Cargo Ship (with
+  Ro-Ro facility)` ambiguity) — not raised for a ruling this session.
+
+---
+
+## 14. Port-call counts per agent — RAISED, William, 2026-08-19, OPEN
+
+New report, same billing-unit criteria as §12's split logic (§7.1/§8, reaffirmed
+in §12.3.3 and §13): `COUNT(*) GROUP BY agent` instead of `SUM(agency_fee)` —
+one count per port call, two only on a genuine discharge→load turnover split,
+each split leg attributed to its own agent.
+
+### Open
+
+- **Timing** — build now vs. log and scope for later. Dismissed when asked.
+- **Scope** — every port call, or only the ones that currently accrue an
+  agency fee (excludes the ~9% where `agency_fee_for()` returns `None` — no
+  usable IMO and no type from either source, the tug/workboat exclusion).
+  Dismissed when asked.
