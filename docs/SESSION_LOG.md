@@ -91,10 +91,24 @@ and scope still undecided). A **third audit** was already flagged as due
 once §12 and the §11 rulings land; §11 (54 `No Cargo` legs that bill anyway,
 and §11.2-11.4) was not reached this session and is still open.
 
-Separately, William raised wanting to explore a Claris/FileMaker clone of
-this pipeline (or a report layer on top of it), referencing the same having
-been done for the Ships-Register project MRTIS pulls its register from —
-not scoped yet, picked up at the end of this session.
+Separately, William raised wanting a Claris/FileMaker clone. Confirmed the
+repo is public (`github.com/theshipsagent/MRTIS`) but William's call is that
+the fee figures are modeled/estimated and not sensitive — no action taken.
+
+Scoped and set up before this session closed: **`mrtis-claris`**, a new
+private repo (`github.com/theshipsagent/mrtis-claris`), Phase 1 only — a
+FileMaker-importable export of the validated port-call/fee data (following
+the pattern already proven in `Ships_Register/src/build_filemaker_package.py`),
+a plain-language business-rules spec, sample charts, and sample reports, for
+review — not a native FileMaker rebuild. Scoped this way specifically to sit
+underneath the two existing, more mature FileMaker projects
+(`/Users/billy/Documents/File Maker/` — the internal platform
+evaluation/redesign, Phase 1, no build yet; `/Users/billy/Documents/File Maker Analysis /`
+— the independent audit of Blue Water Shipping's live Agency Platform) rather
+than jump ahead of either's own "no build yet" governance. `README.md` and
+`CLAUDE.md` written and pushed; William starts the actual build in a fresh
+session there, recommended on Claude Opus 5 given the cross-project synthesis
+and real architectural calls that session will need to make on its own.
 
 ---
 
