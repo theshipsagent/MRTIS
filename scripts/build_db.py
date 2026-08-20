@@ -286,7 +286,8 @@ def transform(raw: pd.DataFrame, vessel_type_map: dict = None, dredge_exclusions
         lambda t: vessel_type_map.get(str(t).strip()) if t and str(t).strip() else None
     )
     imo_repair = build_imo_repair_map(
-        zip(df["imo_canonical"], df["name_normalized"], df["_canon_type"]),
+        zip(df["imo_canonical"], df["name_normalized"], df["_canon_type"],
+            df["Action"], df["event_time"]),
         excluded_names=dredge_names,
     )
     repaired_rows = int(df["imo_canonical"].isin(imo_repair).sum())

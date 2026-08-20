@@ -338,7 +338,7 @@ general cargo terminals" should not be surprised that half the legs are
 general-cargo hulls — `docs/BUILD.md`'s "Ships register enrichment" section
 already carries the general-cargo framing this confirms.
 
-### 7.5 What counts as evidence that two same-name vessels are one ship?
+### 7.5 What counts as evidence that two same-name vessels are one ship? — RULED and BUILT, William, 2026-08-19
 
 The audit found one false merge among the 31 (`1782585 -> 9747120`, "Egret" —
 131 rows, 51% of all repaired rows). `build_imo_repair_map`'s "exactly one
@@ -349,6 +349,35 @@ The proposed discriminator, which cleanly separates Egret from the other 30:
 refuse the merge when the corrupted-IMO rows contain **no `Enter`/`Exit`
 event** and their date range **does not overlap** the period the good vessel
 actually carried that name. Confirm before implementing.
+
+**RULED**: *"yes, add the guard."*
+
+**BUILT AND VERIFIED, 2026-08-19.** Added as guard 4 in
+`scripts/lib/parse.py::build_imo_repair_map`, which now takes `action` and
+`event_time` alongside the existing fields. A merge is refused only when
+**both** checks fail — no SWP crossing *and* no date overlap; a genuine "one
+glitched row" case is a blip inside an otherwise continuous history and
+clears at least one. Full chain rebuilt: repairs **31 → 30**, repaired rows
+**256 → 125**. The single blocked merge is exactly Egret — 131 rows, **0**
+`Enter`/`Exit` events, 2019-01 to 2019-10, against the real tanker
+`9747120`'s 37 events, 10 crossings, 2020-07 to 2026-01. Non-overlapping and
+uncrossed on every axis. The other 30 repairs are byte-identical.
+
+**Also excluded at ingest, William, same session**: *"add Egret to excluded
+list."* Added to `dictionaries/dredge_exclusions.csv` **by IMO
+(`17825854`), deliberately not by name** — there are two vessels named
+exactly `Egret` in this data and the other (`9747120`) is a real tanker with
+10 river crossings that must survive. It does, as do `Egret Bulker`
+(`9441295`), `Egret Oasis` (`9592006`), `Hafnia Egret` (`9607174`) and
+`NONAME:EGRET`. The two fixes are independent and both were kept: the guard
+stops the merge logic from ever making this class of mistake again, the
+exclusion removes this specific vessel's 131 phantom rows from the warehouse.
+
+**Effect**: `fact_zone_event` 290,436 → **290,305**; the per-departure basis
+drops **$98,000** to **$349,527,500** (see §12.3.4 — this is the audit's
+"fabricated Egret fee", never real traffic). **No change to the billable leg
+basis, port-call count or leg count** ($272,660,000 / 40,170 / 41,804) — all
+131 rows were unplaced and reached no leg, as audit #2 established.
 
 ## 8. What is `No Cargo`, and should it bill? — RESOLVED, William, 2026-08-19
 
@@ -1036,6 +1065,19 @@ benchmark. Only `agency_fee_for()`'s *leg-level* callers (§12's new tiers)
 change; `build_db.py`'s per-event fee computation is untouched. This also
 sidesteps the structural mismatch noted above — R5 has no meaning on a table
 where a departure carries exactly one berth.
+
+**The benchmark's VALUE moved later the same day: $349,625,500 →
+$349,527,500.** What "frozen" means here is that the *pricing schedule* on
+this basis does not change — not that the number is immutable regardless of
+what the underlying data contains. Excluding the fabricated `Egret`
+(§7.5/§2, IMO `17825854`, 131 rows) removed **$98,000** of fees that were
+never real traffic to begin with, so the basis legitimately re-derives lower.
+Anything reconciling against the old $349,625,500 (including the
+`mrtis-claris` review package, which cites it as a headline target) will
+report a false mismatch until it is re-exported against the current build.
+The **billable leg basis, port-call count and leg count did not move at all**
+($272,660,000 / 40,170 / 41,804) — all 131 rows were unplaced events that
+reached no call and no leg, exactly as audit #2 predicted.
 
 All of §12.3 is now resolved.
 

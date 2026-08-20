@@ -7,7 +7,7 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
-## 2026-08-19 (session 3) — non-commercial time classification built: layberth out of counts/fees, R5 fixed, §11.1a resolved
+## 2026-08-19 (session 3) — non-commercial time built; R5, §11.1a, merge guard, Egret, R2 Ro-Ro
 
 **Objective**: build the five rulings William gave at the close of the
 `mrtis-claris` review package's independent audit #2 session (recorded there,
@@ -85,13 +85,72 @@ re-derived exactly as given once measured the same way the code measures them
 
 | Figure | Before | After |
 |---|---:|---:|
-| Billable total | $272,167,500 | **$272,679,000** |
-| Per-departure basis (frozen, §12.3.4) | $349,625,500 | **$349,625,500** — unchanged |
+| Billable total | $272,167,500 | **$272,660,000** (see the two later rulings below) |
+| Per-departure basis (§12.3.4) | $349,625,500 | **$349,527,500** — see the Egret note below |
 | Port calls | 40,170 | 40,170 total, **40,028** commercial (142 flagged) |
 | Legs | 41,804 | 41,804 total, **41,662** commercial |
 | `No Cargo` legs billing | 54 / $281,750 | **0** labelled so (all relabel to unresolved); fee for that population is $314,750, not $281,750, because 6 of the 54 also fall inside the R5 fix above |
 | Lay-up time preserved | — | **23,390 hrs / 974.6 (≈975) vessel-days**, all 142 calls `call_status = 'complete'` |
 | Layberth reallocated | — | **45,742 hrs, 389 stops, 379 legs** off `berth_hours` into `layberth_hours` |
+| Spine rows | 290,436 | **290,305** (Egret exclusion, below) |
+
+The R5 fix alone took the billable total to $272,679,000; the R2 Ro-Ro
+ruling below then took it to **$272,660,000**, which is the figure this
+session ends on.
+
+### Then, same session — four more rulings, and a moved benchmark
+
+William worked through the remaining open questions in the same
+conversation. Four needed no build (§7.2 Kennington stays excluded; §11.2
+leave the unplaced-events gap as is; §11.4 no fee, existing rule is right;
+§13.1 reconfirmed discharge-only with no buoy-style positional exception).
+Four did:
+
+- **§12.3.2** — `General Cargo Ship (with Ro-Ro facility)` → R2's $1,000
+  (*"a roro is a port call"*). Only **2** of its 5 chargeable legs actually
+  move; the other 3 are Bulk-canonical vessels at General Cargo berths that
+  R5 already priced at $5,000, since R5 outranks R1-R4. **−$19,000.**
+- **§7.3** — name-only dredge exclusions (the path that wrongly deleted
+  T Jungfrau, Heino and Corinthian) now write
+  `dictionaries/dredge_name_only_review.csv` instead of dropping silently:
+  23 names, 8 forming a complete `Enter → Exit` transit. Scaled to the
+  lighter end of what William asked for (*"a quarantine table... or if
+  that's too much also fine leave as is"*) — mirrors the existing
+  `fgis_match_review.csv` pattern rather than adding a mechanism. **No data
+  change**; a review artifact only.
+- **§7.5** — the IMO-repair merge guard, approved and built. Repairs
+  **31 → 30**, repaired rows **256 → 125**. The one blocked merge is exactly
+  the Egret false merge audit #1 found; the other 30 are byte-identical.
+- **§2/§7.5** — Egret then excluded at ingest outright. Added **by IMO
+  (`17825854`), not by name**: two vessels in this data are named exactly
+  `Egret` and the other (`9747120`) is a real tanker with 10 river crossings.
+  It survives, as do `Egret Bulker`, `Egret Oasis`, `Hafnia Egret` and
+  `NONAME:EGRET`.
+
+**The per-departure benchmark moved, and it matters downstream.**
+$349,625,500 → **$349,527,500**, exactly the $98,000 fabricated Egret fee.
+This does not contradict §12.3.4: "frozen" fixes the *pricing schedule* on
+that basis, not the number regardless of what data exists. But that figure
+is cited throughout these docs and is a headline reconciliation target in
+the `mrtis-claris` package — anything checking the old value will report a
+false mismatch until re-exported. The **billable basis, port-call count and
+leg count did not move** ($272,660,000 / 40,170 / 41,804): all 131 Egret rows
+were unplaced events reaching no call and no leg, precisely as audit #2
+predicted.
+
+**§10** (stable `vessel_key`/`event_key`) was approved — *"suggest best
+practice"* — and a concrete recommendation is written into
+`OPEN_QUESTIONS.md` §10, deliberately **not built**: it is a schema-wide key
+change touching every downstream FK and wants its own session. The one trap
+recorded there: do not use Python's built-in `hash()`, which is salted
+per-process and would silently reintroduce the very instability being fixed.
+
+**§11.3** (`tpc = 0`) was investigated but deferred by William (*"leave TPC
+for now, will triage later"*). Worth recording what the investigation found,
+since it redirects the eventual fix: this is **not** an MRTIS pull gap. All
+1,110 affected vessels are matched in the register, and
+`ships_register_fleet.csv` itself stores a literal `0` for every one. The
+fix, when it happens, starts in `Ships_Register`, not here.
 
 ### Decided without stopping to ask (technical, not a business-rule fact)
 
@@ -108,31 +167,49 @@ re-derived exactly as given once measured the same way the code measures them
 
 ### Docs updated
 
-`OPEN_QUESTIONS.md` §7.4 (ruled, Gen=Bulk, no figure moves), §8 (extended/
-generalised into the non-commercial-time classification), §11.1 (ruled (a),
-built, figure corrected $413,000 → $281,750-then-$314,750 with the overlap
-explained), §11.5 (schema comment's stale "~12%" replaced with a pointer to
-the auto-generated report instead of another number that will drift), §12.3.3.1
-(the first-working-berth amendment, built, with the corrected $511,500/93-leg
-figures and the audit-undercount finding), §14 (pure lay-up exclusion answers
-one sub-question); `PORT_CALL_SPEC.md` §3 (refreshed resolution percentages),
-§4 (rewritten "non-commercial time" section), §6 (`layberth_hours`);
-`sql/schema_port_call.sql` (new columns, corrected comments). Sample CSVs in
-the working tree (`sample_port_calls*.csv`) predate this session and were not
-regenerated — no `--sample`/`--sample-months` flag was passed.
+`OPEN_QUESTIONS.md` §2/§7.5 (merge guard + Egret exclusion, both built),
+§7.2 (Kennington stays excluded), §7.3 (name-only review CSV, built), §7.4
+(ruled, Gen=Bulk, no figure moves), §8 (extended/generalised into the
+non-commercial-time classification), §10 (stable-key recommendation,
+approved not built), §11.1 (ruled (a), built, figure corrected $413,000 →
+$281,750-then-$314,750 with the overlap explained), §11.2 (leave as is, with
+the gap's shape measured), §11.3 (`tpc = 0` traced upstream to
+`Ships_Register`, deferred), §11.4 (no fee, confirmed), §11.5 (schema
+comment's stale "~12%" replaced with a pointer to the auto-generated report
+instead of another number that will drift), §12.3.2 (R2 Ro-Ro, built),
+§12.3.3.1 (the first-working-berth amendment, built, with the corrected
+$511,500/93-leg figures and the audit-undercount finding), §12.3.4 (the
+benchmark's new value and why), §13.1 (reconfirmed, no exception), §14 (pure
+lay-up exclusion answers one sub-question); `PORT_CALL_SPEC.md` §3 (refreshed
+resolution percentages), §4 (rewritten "non-commercial time" section), §6
+(`layberth_hours`); `sql/schema_port_call.sql` (new columns, corrected
+comments); `scripts/lib/parse.py` (merge guard);
+`dictionaries/dredge_exclusions.csv` (Egret). Sample CSVs in the working tree
+(`sample_port_calls*.csv`) predate this session and were not regenerated — no
+`--sample`/`--sample-months` flag was passed, so they are now stale against
+this build.
 
 ### Next session starts by
 
-Carrying this back to `mrtis-claris`: its own `SESSION_LOG.md` handoff brief
-is now superseded by the corrected figures here ($272,679,000 / 93 legs, not
-$272,607,500 / 80 legs) — re-export, re-run charts and reports, and clear
-audit #2's A4-A14 documentation findings while there. A **third audit** was
-already flagged as due once §12 and the §11 rulings landed; both have now
-happened (§12 in session 2, §11.1/§8-extension/§12.3.3.1 here) — due whenever
-William wants to size it. §13 (General Cargo / buoy sequencing, phase 2),
-§13.4 (buoy `cargo_group`), full §14 (per-agent counts, scope/timing still
-open), and §12.3.2 (three named types with zero traffic) remain open,
-unchanged from before this session.
+Carrying this back to `mrtis-claris`. Its `SESSION_LOG.md` handoff brief is
+superseded on **two** counts now: the R5 figures ($272,660,000 final, 93
+legs — not $272,607,500 / 80 legs), and the per-departure benchmark
+($349,527,500, not $349,625,500), which that package cites as a headline
+reconciliation target. Re-export, re-run charts and reports, and clear audit
+#2's A4-A14 documentation findings while there.
+
+**§14 (per-agent port-call counts) is the next build**, at William's
+request — one count per port call, two on a genuine discharge→load split,
+each leg to its own agent, filtering `is_commercial_call` by default (the
+pure-lay-up sub-question is now answered; the fee-bearing-only scope
+question is not).
+
+A **third audit** was flagged as due once §12 and the §11 rulings landed;
+both have now happened — due whenever William wants to size it, and it now
+has more surface to cover than when it was first raised. **§10** (stable
+keys) is approved with a recommendation written up and wants its own
+session. §13/§13.4 stay phase 2. Remaining genuinely open: §11.3's upstream
+`Ships_Register` fix, §14's scope, and §3/§4/§5's older items.
 
 ---
 

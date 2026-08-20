@@ -140,16 +140,24 @@ def imo_check_digit_valid(imo: str) -> bool:
     return sum(int(imo[i]) * (7 - i) for i in range(6)) % 10 == int(imo[6])
 
 
+def _overlaps(a, b):
+    """True if two (min, max) timestamp ranges overlap. False if either is
+    unknown (no dated evidence at all) -- absence of evidence is not overlap."""
+    if a[0] is None or b[0] is None:
+        return False
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
 def build_imo_repair_map(records, excluded_names=frozenset()):
     """Map corrupted IMO -> the real one, for vessels split by a bad check digit.
 
     `records` is an iterable of (canonical_imo, normalized_vessel_name,
-    canonical_vessel_type). `excluded_names` are normalized names to leave
-    alone entirely (the dredge//noise list).
+    canonical_vessel_type, action, event_time). `excluded_names` are
+    normalized names to leave alone entirely (the dredge/noise list).
 
     A corrupted IMO is repaired only when its normalized name has EXACTLY ONE
     check-digit-valid IMO alongside it -- an unambiguous "same ship, one
-    glitched row" case (e.g. Chicago Harmony 9755695 -> 9755696). Three guards
+    glitched row" case (e.g. Chicago Harmony 9755695 -> 9755696). Four guards
     stop that rule from merging genuinely different vessels:
 
     1. Exactly one valid IMO for the name. Two real vessels can share a name --
@@ -162,10 +170,20 @@ def build_imo_repair_map(records, excluded_names=frozenset()):
        have dumped 2,377 dredge events into the tanker.
     3. Never merge across a known canonical type conflict (Tanker vs Bulk and
        so on). A blank/unknown type never blocks -- unknown is not evidence.
+    4. Never merge when the corrupted-IMO rows show no SWP Enter/Exit crossing
+       AND their date range doesn't overlap the period the good vessel
+       actually carried that name (William, 2026-08-19, OPEN_QUESTIONS §7.5).
+       Audit #1's one false merge -- Egret, 1782585 -> 9747120, 131 rows --
+       is exactly this shape: no river crossing at all, in a date range the
+       real Egret (9747120) was never observed under that name. A genuine
+       "one glitched row" case is a blip inside an otherwise continuous
+       history and clears at least one of the two checks; this guard only
+       blocks the case that clears neither.
     """
     by_name = {}
     types = {}
-    for imo, name, vtype in records:
+    events = {}  # imo -> [has_crossing, min_time, max_time]
+    for imo, name, vtype, action, event_time in records:
         # pandas hands NaN through for missing values -- guard explicitly
         if not imo or not isinstance(imo, str) or not name:
             continue
@@ -176,6 +194,14 @@ def build_imo_repair_map(records, excluded_names=frozenset()):
         # type and silently blocks legitimate merges.
         if isinstance(vtype, str) and vtype.strip():
             types[imo] = vtype.strip()
+        e = events.setdefault(imo, [False, None, None])
+        if action in ("Enter", "Exit"):
+            e[0] = True
+        # event_time == event_time is False for both float NaN and pandas NaT
+        # -- excludes unparseable timestamps without importing pandas here.
+        if event_time is not None and event_time == event_time:
+            e[1] = event_time if e[1] is None else min(e[1], event_time)
+            e[2] = event_time if e[2] is None else max(e[2], event_time)
 
     repair = {}
     for name, imos in by_name.items():
@@ -187,9 +213,13 @@ def build_imo_repair_map(records, excluded_names=frozenset()):
             continue
         good = valid[0]
         good_type = types.get(good)
+        good_ev = events.get(good, [False, None, None])
         for bad in invalid:
             bad_type = types.get(bad)
             if good_type and bad_type and good_type != bad_type:
+                continue
+            bad_ev = events.get(bad, [False, None, None])
+            if not bad_ev[0] and not _overlaps(bad_ev[1:], good_ev[1:]):
                 continue
             repair[bad] = good
     return repair
