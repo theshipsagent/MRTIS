@@ -5,6 +5,73 @@ follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — non-commercial time classification, and eight rulings closed (2026-08-19, session 3)
+
+Built the five rulings William gave closing the `mrtis-claris` audit session,
+then worked through the remaining open questions in the same conversation.
+Scratch-copy rebuild and full reverification before the real repo was touched,
+per standing practice; every headline figure re-derived independently in SQL
+rather than read out of the build's own reporting.
+
+- **Non-commercial time, built as one general classification** (per-stop
+  `is_non_commercial`), not a layberth special case — William was explicit
+  that other oddities will join it. Layberth is its first and only current
+  member. Four behaviours follow from it:
+  - **R5 prices off the leg's first *working* berth** (§12.3.3.1 amended).
+    `first_berth_zone`/`first_berth_facility`/`facility_type` now skip
+    layberth stops, the way §8a already skips them for splits — so a bulker
+    that lays up at a repair yard before loading at an elevator no longer
+    prices (or reports) from the repair yard.
+  - **`berth_stop_count`/`berth_hours` exclude layberth time**, on both
+    `port_call_leg` and `port_call`; new **`layberth_hours`** column on both
+    carries it instead of dropping it. 45,742 hrs / 389 stops / 379 legs.
+  - **Pure lay-up calls flagged, never deleted** —
+    `port_call.is_commercial_call` / `call_class`. 142 calls out of counts and
+    fees; their 23,390 hrs (975 vessel-days) stay on the SWP-to-SWP spine.
+  - **An unresolved stop outranks `No Cargo`** for a leg's label (§11.1a).
+    54 legs relabel to unresolved; the label/fee contradiction audit #2 found
+    as W1 is gone.
+- **Two new hard guardrails**: call-level `berth_stop_count`/`layberth_hours`
+  reconcile to the sum of their legs'; no fee accrues on a non-commercial call.
+- **R2 extended to `General Cargo Ship (with Ro-Ro facility)`** ($1,000,
+  §12.3.2). Only 2 of its 5 chargeable legs move — the other 3 are Bulk at
+  General Cargo berths, already R5-priced, since R5 outranks R1-R4.
+- **IMO-repair merge guard** (§7.5) — `build_imo_repair_map` refuses a merge
+  when the corrupted-IMO rows show no SWP crossing **and** their dates don't
+  overlap the good vessel's. Both must fail. Repairs 31 → 30, rows 256 → 125;
+  the one blocked merge is exactly audit #1's false Egret merge.
+- **Egret excluded at ingest**, by IMO (`17825854`) and deliberately *not* by
+  name — two vessels here are named exactly `Egret` and the other (`9747120`)
+  is a real tanker that must survive. It does.
+- **Name-only dredge exclusions now write
+  `dictionaries/dredge_name_only_review.csv`** instead of dropping silently
+  (§7.3) — 23 names, 8 forming a complete `Enter → Exit` transit (the signal
+  that flagged T Jungfrau, Heino and Corinthian). A review artifact; no data
+  change.
+
+**Figures.** Billable leg basis **$272,167,500 → $272,660,000**. Port calls
+40,170 total / **40,028 commercial**; legs 41,804 / **41,662 commercial**;
+spine 290,436 → **290,305** rows.
+
+**The per-departure benchmark moved: $349,625,500 → $349,527,500** — exactly
+the $98,000 fabricated Egret fee. This does not contradict §12.3.4, which
+froze the *pricing schedule* on that basis, not the number regardless of what
+data exists. But it is cited throughout these docs and is a headline
+reconciliation target in the `mrtis-claris` package, which will report a false
+mismatch until re-exported.
+
+**Corrected a figure carried in from the `mrtis-claris` audit**: its R5
+estimate of "80 legs, +$440,000" enumerated only 5 of the 14 layberth zones
+and never counted the five Violet Docks. Re-derived: **107** legs affected,
+**93** revert to the $10,500 base tier (**+$511,500**), 14 correctly stay at
+$5,000 against a genuine General Cargo working berth.
+
+Rulings recorded without a build: §7.2 (Kennington stays excluded), §10
+(stable keys approved, recommendation written, deliberately not built),
+§11.2 (unplaced-events gap left as is, its shape measured), §11.3 (`tpc = 0`
+traced upstream to `Ships_Register`'s own data, not an MRTIS pull gap —
+deferred), §11.4 (no fee), §13.1 (reconfirmed discharge-only, no exception).
+
 ### Added — independent audit #2, port-call assembly layer (2026-08-19)
 
 - **`docs/audit/AUDIT_2026-08-19_1746.md` / `.pdf`** — adversarial, read-only

@@ -7,7 +7,7 @@ is just the thread — what was done, what was decided, what to pick up next.
 
 ---
 
-## 2026-08-19 (session 3) — non-commercial time built; R5, §11.1a, merge guard, Egret, R2 Ro-Ro
+## 2026-08-19 (session 3) — non-commercial time built; R5, §11.1a, merge guard, Egret, R2 Ro-Ro — MRTIS PARKED at close
 
 **Objective**: build the five rulings William gave at the close of the
 `mrtis-claris` review package's independent audit #2 session (recorded there,
@@ -189,27 +189,44 @@ comments); `scripts/lib/parse.py` (merge guard);
 `--sample`/`--sample-months` flag was passed, so they are now stale against
 this build.
 
-### Next session starts by
+### MRTIS is PARKED as of the close of this session (William, 2026-08-19)
 
-Carrying this back to `mrtis-claris`. Its `SESSION_LOG.md` handoff brief is
-superseded on **two** counts now: the R5 figures ($272,660,000 final, 93
-legs — not $272,607,500 / 80 legs), and the per-departure benchmark
-($349,527,500, not $349,625,500), which that package cites as a headline
-reconciliation target. Re-export, re-run charts and reports, and clear audit
-#2's A4-A14 documentation findings while there.
+**Decision, closing this session**: *"let's focus only on Claris FM moving
+ahead, can park the other version."* Work moves to the **`mrtis-claris`**
+repo — the Claris/FileMaker review package. MRTIS itself is parked: no
+further build work planned here, and everything below is a backlog to pick
+up *if and when* it reopens, not a queue anyone is working.
 
-**§14 (per-agent port-call counts) is the next build**, at William's
-request — one count per port call, two on a genuine discharge→load split,
-each leg to its own agent, filtering `is_commercial_call` by default (the
-pure-lay-up sub-question is now answered; the fee-bearing-only scope
-question is not).
+This is a good place to park it. The repo is in a known-good, fully verified
+state: all guardrails pass, every figure in this entry was independently
+re-derived in SQL, and the last four commits are pushed to `origin/main`
+(`09e1cb6..578ed81`). Nothing is half-built.
 
-A **third audit** was flagged as due once §12 and the §11 rulings landed;
-both have now happened — due whenever William wants to size it, and it now
-has more surface to cover than when it was first raised. **§10** (stable
-keys) is approved with a recommendation written up and wants its own
-session. §13/§13.4 stay phase 2. Remaining genuinely open: §11.3's upstream
-`Ships_Register` fix, §14's scope, and §3/§4/§5's older items.
+**What MRTIS owes `mrtis-claris` before that repo can be trusted** — this is
+now the *first* task over there, not a task here:
+
+- **Re-export.** `mrtis-claris`'s package was built against commit
+  `09e1cb63` and is stale on two counts: the R5 figures (**$272,660,000**
+  final, 93 legs — not the $272,607,500 / 80 legs its handoff brief
+  predicted) and the per-departure benchmark (**$349,527,500**, not
+  $349,625,500), which that package cites as a headline reconciliation
+  target and which moved when the fabricated Egret was excluded.
+- **Its export script will hard-fail** until `layberth_hours`,
+  `is_commercial_call` and `call_class` get `*_DESC` entries — that is
+  `build_review_package.py` behaving as designed (it refuses to ship an
+  undocumented column), not a bug. Expected; noted so it isn't diagnosed
+  twice.
+- Audit #2's **A4-A14** documentation findings are still open in that repo.
+
+**Backlog here, if MRTIS reopens** (nothing in flight, nothing blocking):
+§14 (per-agent counts — the pure-lay-up sub-question is answered, the
+fee-bearing-only scope question is not); §10 (stable keys — approved, with a
+concrete recommendation written up in `OPEN_QUESTIONS.md` §10, deliberately
+not built as it wants its own session); §13/§13.4 (phase 2); §11.3's fix,
+which starts in `Ships_Register` and not here; §12.3.2's remaining zero-
+traffic types; and §3/§4/§5's older items. A **third independent audit** was
+flagged as due once §12 and the §11 rulings landed — both have now happened,
+so it is due whenever it is wanted, with more surface than when first raised.
 
 ---
 

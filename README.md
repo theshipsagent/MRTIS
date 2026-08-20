@@ -67,16 +67,30 @@ MRTIS/
 │   ├── WHITEPAPER.md        -- purpose, methodology, design rationale, roadmap
 │   ├── BUILD.md             -- pipeline internals, schema, how to extend
 │   ├── PORT_CALL_SPEC.md    -- port call assembly rules, and what a guardrail is
+│   ├── OPEN_QUESTIONS.md    -- every business ruling, with its evidence and figures
+│   ├── SESSION_LOG.md       -- one entry per working session; the context thread
+│   ├── FGIS_MATCH_SPEC.md   -- how FGIS certificates resolve to MRTIS vessels
 │   ├── PORT_CALL_QUALITY.md -- auto-generated report from the assembly
-│   └── DATA_QUALITY.md      -- auto-generated report from the most recent build
+│   ├── DATA_QUALITY.md      -- auto-generated report from the most recent build
+│   ├── FGIS_*_QUALITY.md    -- auto-generated reports from the FGIS stages
+│   └── audit/               -- independent adversarial audits, read-only by design
 ├── sql/
 │   ├── schema.sql           -- DuckDB DDL for dim_vessel, dim_agent, dim_zone, fact_zone_event
+│   ├── schema_fgis_match.sql-- DDL for fgis_record, fgis_record_line
 │   └── schema_port_call.sql -- DDL for port_call, port_call_leg, port_call_event
 ├── scripts/
-│   ├── build_db.py          -- main entrypoint: ingest -> transform -> load
-│   ├── build_port_calls.py  -- assemble events into port calls and legs
+│   ├── build_db.py          -- stage 1: ingest -> transform -> load the core warehouse
+│   ├── build_fgis.py        -- stage 2: raw USDA FGIS export ingest
+│   ├── build_fgis_match.py  -- stage 3: FGIS -> vessel matching and cross-reference
+│   ├── build_port_calls.py  -- stage 4: assemble events into port calls and legs
 │   ├── lib/parse.py         -- field-parsing helpers (draft, mile, IMO, zone classification)
 │   └── lib/guardrails.py    -- the hard/soft check framework the builds run on themselves
+├── dictionaries/            -- William's hand-built reference data, versioned
+│   ├── zone_facility.csv    -- zone -> facility, facility_type, ops. The authority.
+│   ├── vessel_type.csv      -- raw Type -> canonical vessel type
+│   ├── dredge_exclusions.csv-- vessels filtered at ingest as non-cargo noise
+│   ├── ships_register_fleet.csv -- snapshot from the Ships_Register project
+│   └── *_review.csv         -- auto-generated: what a build declined to decide alone
 ├── data/
 │   └── db/mrtis.duckdb      -- built database (not versioned, regenerable)
 └── skills/
