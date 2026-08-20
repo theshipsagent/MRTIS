@@ -60,6 +60,12 @@ SHIP_TYPE_FEE_TIERS = {
     "Passenger/Cruise": 2_500.0,                                 # R1
     "Ro-Ro Cargo Ship": 1_000.0,                                 # R2
     "Vehicles Carrier": 1_000.0,                                 # R2
+    # General Cargo Ship (with Ro-Ro facility) -- the nearest thing actually
+    # in MRTIS traffic to R2's named types, neither of which appear (§12.3.2).
+    # RULED, William, 2026-08-19: "a roro is a port call" -- covered by R2, not
+    # left at the base tier. 6 vessels, 5 chargeable legs today ($52,500 at
+    # the old $10,500 base tier -> $5,000 at R2).
+    "General Cargo Ship (with Ro-Ro facility)": 1_000.0,         # R2
     "Container Ship (Fully Cellular)": 750.0,                    # R3
     "Container Ship (Fully Cellular/Ro-Ro Facility)": 750.0,     # R3
     "Refrigerated Cargo Ship": 5_000.0,                          # R4
@@ -232,16 +238,40 @@ def transform(raw: pd.DataFrame, vessel_type_map: dict = None, dredge_exclusions
     # visible, and --keep-dredges restores them without editing the dictionary.
     dredge_imos, dredge_names = dredge_exclusions or (set(), set())
     dredge_dropped = {}
+    name_only_review = []
     if dredge_imos or dredge_names:
         # By IMO where the dictionary has one; by name ONLY for entries with no
         # IMO, and then only against rows that themselves carry no valid IMO.
-        is_dredge = df["imo_canonical"].isin(dredge_imos) | (
-            df["imo_canonical"].isna() & df["name_normalized"].isin(dredge_names)
-        )
+        is_dredge_by_name = df["imo_canonical"].isna() & df["name_normalized"].isin(dredge_names)
+        is_dredge = df["imo_canonical"].isin(dredge_imos) | is_dredge_by_name
         if is_dredge.any():
             dredge_dropped = (
                 df.loc[is_dredge, "vessel_name"].value_counts().to_dict()
             )
+            # The name-only path is the one with real ambiguity risk (William,
+            # 2026-08-19, OPEN_QUESTIONS §7.3): a genuinely different real
+            # vessel can share an exact name with a no-IMO dredge entry -- T
+            # Jungfrau, Heino and Corinthian all turned out to be real river
+            # transits (Enter -> berth -> Exit), not noise, deleted only
+            # because their name collided with one. Rather than delete these
+            # silently, summarise what was dropped per name so a false
+            # positive can be spotted and pulled back in by hand -- see
+            # dictionaries/dredge_name_only_review.csv. The IMO-matched path
+            # is not reviewed here: IMO is a deterministic key, so it carries
+            # none of this ambiguity.
+            if is_dredge_by_name.any():
+                nb = df.loc[is_dredge_by_name, ["vessel_name", "IMO", "Action", "event_time"]]
+                for name, g in nb.groupby("vessel_name"):
+                    name_only_review.append({
+                        "vessel_name": name,
+                        "record_count": len(g),
+                        "first_seen": g["event_time"].min(),
+                        "last_seen": g["event_time"].max(),
+                        "distinct_imo_raw_values": ", ".join(
+                            sorted(v for v in g["IMO"].astype(str).unique() if v)) or None,
+                        "forms_complete_enter_exit_transit": bool(
+                            (g["Action"] == "Enter").any() and (g["Action"] == "Exit").any()),
+                    })
             df = df[~is_dredge]
 
     # Repair IMOs corrupted in the source before they become vessel identity.
@@ -293,6 +323,7 @@ def transform(raw: pd.DataFrame, vessel_type_map: dict = None, dredge_exclusions
         "bad_timestamps": int(bad_time),
         "dredge_rows_dropped": sum(dredge_dropped.values()),
         "dredge_dropped_detail": dredge_dropped,
+        "name_only_dropped_review": name_only_review,
         "imo_repairs": len(imo_repair),
         "imo_repaired_rows": repaired_rows,
         "imo_repair_map": imo_repair,
@@ -725,6 +756,8 @@ def main():
     ap.add_argument("--ships-register-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "ships_register_fleet.csv"))
     ap.add_argument("--vessel-type-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "vessel_type.csv"))
     ap.add_argument("--dredge-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "dredge_exclusions.csv"))
+    ap.add_argument("--dredge-review-path",
+                    default=os.path.join(PROJECT_ROOT, "dictionaries", "dredge_name_only_review.csv"))
     ap.add_argument("--zone-facility-path", default=os.path.join(PROJECT_ROOT, "dictionaries", "zone_facility.csv"))
     ap.add_argument("--keep-dredges", action="store_true",
                     help="Keep vessels marked exclude_as_dredge=Y instead of filtering them out")
@@ -749,6 +782,18 @@ def main():
               + ", ".join(f"{k} ({v:,})" for k, v in
                           sorted(stats["dredge_dropped_detail"].items(),
                                  key=lambda x: -x[1])))
+    review = stats["name_only_dropped_review"]
+    if review:
+        with open(args.dredge_review_path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "vessel_name", "record_count", "first_seen", "last_seen",
+                "distinct_imo_raw_values", "forms_complete_enter_exit_transit"])
+            w.writeheader()
+            w.writerows(sorted(review, key=lambda r: -r["record_count"]))
+        complete = sum(1 for r in review if r["forms_complete_enter_exit_transit"])
+        print(f"Wrote {len(review)} name-only dredge exclusion(s) for review "
+              f"({complete} form a complete Enter->Exit transit -- check these first) "
+              f"to {args.dredge_review_path}")
     if stats["imo_repairs"]:
         print(f"Repaired {stats['imo_repairs']} corrupted IMO(s) affecting "
               f"{stats['imo_repaired_rows']:,} rows:")

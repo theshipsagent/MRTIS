@@ -261,7 +261,7 @@ fallback so the two layers price identically.
    raw signal and add `port_call_leg.agency_fee` as the billable column, or
    retire the event-level column. Needs a call before either script changes.
 
-### 7.2 Is `Kennington` (IMO 9664926) really a dredge/workboat?
+### 7.2 Is `Kennington` (IMO 9664926) really a dredge/workboat? — RULED, William, 2026-08-19: stays excluded
 
 It sits on `dredge_exclusions.csv` with `exclude_as_dredge=Y` (one of the
 original 9), but its data profile is commercial: valid IMO, `Type=Tank` on
@@ -273,7 +273,10 @@ and **$304,500** in accrued fees.
 Same question, smaller stakes, for `Dodge Island` (7917800 — looks like a tug;
 anchorage/pilot only, zero berth events, so no fee impact either way).
 
-### 7.3 Should the name-only exclusion spare a complete river call?
+**RULED**: Kennington stays on the exclusion list, no change. `Dodge Island`
+was not separately raised for a ruling (zero fee impact either way).
+
+### 7.3 Should the name-only exclusion spare a complete river call? — RULED and BUILT, William, 2026-08-19
 
 The name fallback fires only against rows with no valid IMO — which is exactly
 the documented "IMO, Agent and Type go missing together" defective input path,
@@ -290,6 +293,29 @@ deleted:
 
 **Possible rule**: never name-exclude rows that form a complete
 `Enter` → berth → `Exit` river transit.
+
+**RULED**: *"if there is no ship's name, place in quarantine"* — clarified to
+mean the name-only exclusion path specifically (these rows already carry no
+valid IMO; a "quarantine table or other table where, leaving any mismatches,
+we can pull back in and manually edit later" was the ask, scaled back to "or
+if that's too much also fine leave as is" once the cost was on the table).
+
+**BUILT, 2026-08-19**, at the lighter end of that range: nothing is restored
+automatically (the three calls above are still excluded, and the exclusion
+rule itself is unchanged), but `transform()` in `scripts/build_db.py` now
+writes every name-only-matched drop to
+`dictionaries/dredge_name_only_review.csv` — one row per name, with record
+count, first/last seen, any raw IMO values that showed up on those rows, and
+whether the rows form a complete `Enter → berth → Exit` transit (the signal
+that flagged T Jungfrau, Heino and Corinthian in the first place). This
+mirrors the existing `fgis_match_review.csv` pattern rather than adding a new
+mechanism. Current run: **23 names, 8 forming a complete transit** —
+T Jungfrau, Heino, Corinthian plus five more worth a look (Ginny Lab, Sarah
+Dann, Kritical Mass, French Warship, Cg Eagle). Pulling any of them back into
+the warehouse is still a manual step (edit `dredge_exclusions.csv` to
+`exclude_as_dredge` blank and rebuild) — this only makes the false positives
+visible instead of silent. **No change to `dredge_rows_dropped` or any
+downstream count** — this is a review artifact, not a data change.
 
 ### 7.4 Should `Gen` (general cargo) bill at the bulk tier? — RULED, William, 2026-08-19
 
@@ -499,7 +525,7 @@ the complete/incomplete decision resolves cleanly.
 Ships_Register need for these types, and a decision on pulling vs deriving
 `ship_type_group`.
 
-## 10. `vessel_key`/`event_key` are row position, not a stable identity — OPEN, raised 2026-08-19
+## 10. `vessel_key`/`event_key` are row position, not a stable identity — APPROVED, William, 2026-08-19: "suggest best practice"
 
 Both are assigned as `dataframe.index + 1` in `build_db.py` -- arbitrary
 position in that run's rebuild, not derived from anything about the vessel or
@@ -529,6 +555,41 @@ changing (e.g. an IMO repair merging two records) would move it. This is a
 schema-level change (`sql/schema.sql`, `build_db.py`, and every downstream FK
 in the FGIS and port-call layers) -- needs scoping as its own piece of work,
 not folded into an unrelated fix.
+
+**William, 2026-08-19**: *"suggest best practice, [make it] bulletproof."*
+Delegated the technical approach rather than choosing between options himself
+-- recommendation below, not yet built (deliberately its own session, per the
+note above, not folded into this one).
+
+**Recommendation**: build the "possible fix" above exactly as scoped, with
+one detail that matters more than it looks --
+
+- **Do not use Python's built-in `hash()`.** `hash()` on a string is salted
+  per-process (`PYTHONHASHSEED` randomization, on by default since Python
+  3.3) specifically so it is *not* reproducible across runs -- using it would
+  silently reintroduce the exact bug this is meant to fix, just with extra
+  steps. Use a real deterministic hash (`hashlib.sha256(natural_key.encode()).digest()`,
+  or `hashlib.blake2b` for speed) truncated to fit a signed 63-bit `BIGINT`.
+- **Vessel key**: hash of `dim_vessel.natural_key` alone (IMO, or
+  `NONAME:<name>`). Two different vessels never share a `natural_key` today
+  (that uniqueness is already relied on), so collision risk is the hash
+  function's alone -- negligible at 63 bits for ~10,000 vessels.
+- **Event key**: hash of `(natural_key, event_time, action, zone_name)` --
+  the same tuple `transform()` already dedupes on (`dedup_cols`), so it is
+  already known to be unique per row post-dedup; hashing it just makes that
+  uniqueness portable across rebuilds instead of positional.
+- **Keep a hard guardrail asserting no collisions** (`nunique(key) ==
+  len(rows)`) rather than trusting the birthday-bound math -- cheap to check,
+  catches a hash-function change or an unexpected input duplicate instantly
+  rather than silently merging two vessels' histories the way the old
+  positional scheme never could.
+- **This correctly still reassigns a key when identity genuinely changes**
+  (an IMO repair merging two `natural_key`s into one) -- that is the design
+  intent (`§10`'s own text: "only a vessel's own identity changing... would
+  move it"), not a bug to guard against.
+- Do **not** try to preserve today's specific key *values* through the
+  migration -- only their *stability going forward* matters. A one-time
+  renumbering on the switchover is expected and fine.
 
 ---
 
@@ -606,7 +667,7 @@ overlapping population (a leg with both a layberth stop and an unresolved
 stop), so their dollar effects are not separable. See §12.3.3.1 for the full
 reconciliation.
 
-### 11.2 Should `port_call.agency_fee_departures_total` include unplaced events?
+### 11.2 Should `port_call.agency_fee_departures_total` include unplaced events? — RULED, William, 2026-08-19: leave as is
 
 The column exists so the two fee bases "can be compared directly". It does not
 reconcile to the basis it is meant to represent:
@@ -629,7 +690,16 @@ Egret fee** — the gap carries known bad data, not just coverage loss.
 
 *Dollars: $2,933,000 unreconciled. Not a billing error — a comparability one.*
 
-### 11.3 Should `tpc = 0` be stored as NULL?
+**RULED**: leave as is, no action. Checked the shape of the gap before he
+ruled: it spans the full 2019-2026 data range but is heavily front-loaded —
+2019 alone is 250 of the 388 events and $1,869,000 of the $2,933,000 (64%),
+almost entirely `before_first_entry` (a vessel already mid-river on day one
+of the export window, with no `Enter` to anchor a call to — an edge effect of
+where the feed starts, not an ongoing leak). 2020 onward averages under
+$150,000/year. **No guardrail added, no schema comment change** — the gap is
+understood, not hidden; §11.5's items are the only correction still pending.
+
+### 11.3 Should `tpc = 0` be stored as NULL? — RAISED, William, 2026-08-19: deferred
 
 `port_call.dwt`/`.tpc` are reported 99.7% populated. But `tpc > 0` on only
 **89.6%** — `tpc = 0` on **4,045 calls (10.1%)**, across 1,130 distinct
@@ -644,7 +714,19 @@ Related to, but distinct from, the TPC provenance question already logged in
 `docs/SESSION_LOG.md` (captured-vs-estimated). This one is purely
 zero-encoded-as-null.
 
-### 11.4 Should the 2 berthed-but-unbilled legs bill?
+**Investigated, 2026-08-19** (not a fix — William deferred the ruling to a
+future triage pass, this is just seeding the ground truth for it): checked
+whether the pull from `Ships_Register` was the problem. It isn't. All 1,110
+distinct vessels showing `tpc = 0` on a call are matched in
+`dictionaries/ships_register_fleet.csv`, and the register file itself stores
+a literal `0` for every one of them — not blank, not NULL. So MRTIS's join is
+working correctly; whatever is producing `0` instead of a real value (or a
+genuine NULL) is upstream, in `Ships_Register`'s own build. **DEFERRED,
+William, 2026-08-19**: *"leave TPC [as-is] for now, will triage later, as
+that's one of the last, more difficult steps — just seeding it."* No change
+made. Whoever picks this up next should start in `Ships_Register`, not here.
+
+### 11.4 Should the 2 berthed-but-unbilled legs bill? — RULED, William, 2026-08-19: no
 
 Two legs reached a berth and did non-layberth work but carry no fee, because
 `agency_fee_for()` returns `None` for a vessel with no usable IMO **and** no
@@ -655,6 +737,9 @@ Both did berth. If the rule is right, this is correct and no action follows. If
 a berthing vessel is always agented regardless of identity, they are under-billed.
 
 *Dollars at stake: ≤ $21,000.*
+
+**RULED**: no — the existing rule is right, no action. A vessel with no
+usable IMO and no type from either source is not an agented ocean vessel.
 
 ### 11.5 Not a question — items for correction without a ruling
 
@@ -776,7 +861,7 @@ no row — but William should rule.
 `vessel_type_canonical` is the fallback only for vessels with no register row
 (9 vessels with chargeable legs today, 12 legs, $63,000; 63 vessels register-wide).
 
-#### 12.3.2 Three of the six named types have no traffic
+#### 12.3.2 Three of the six named types have no traffic — RULED and BUILT, William, 2026-08-19
 
 `Ro-Ro Cargo Ship`, `Vehicles Carrier` and
 `Container Ship (Fully Cellular/Ro-Ro Facility)` exist in the world register
@@ -789,6 +874,20 @@ $52,500 today. **Is that intended to be covered by R2?** It is a Ro-Ro-capable
 ship but a general-cargo hull, so it is genuinely ambiguous. Also present in the
 register but not in traffic: `Container/Ro-Ro Cargo Ship` (11),
 `Rail Vehicles Carrier` (12).
+
+**RULED**: *"a roro is a port call"* — confirmed as R2, $1,000.
+
+**BUILT AND VERIFIED, 2026-08-19.** Added to `SHIP_TYPE_FEE_TIERS` in
+`scripts/build_db.py`. Full chain rebuilt and reverified. Of the 5 chargeable
+legs, only **2** actually change price: the other 3 are `Bulk`-canonical
+vessels calling a General Cargo berth, so R5 (which outranks R1-R4 per
+§12.3.3.3) already priced them at $5,000 regardless of what R2 says — the
+"$52,500 today" figure predates R5 existing at all and no longer describes
+the current baseline. The 2 legs that do move go from the $10,500 Bulk base
+tier (Mid-Stream berths, not General Cargo, so R5 never reaches them) to
+$1,000. **−$19,000.** Billable total: $272,679,000 → **$272,660,000**.
+`Container/Ro-Ro Cargo Ship` and `Rail Vehicles Carrier` remain untouched —
+zero chargeable legs, not raised for a ruling.
 
 #### 12.3.3 R5 is the first berth-dependent rule, and it needs three sub-decisions
 
@@ -1017,6 +1116,12 @@ Does **not** change `facility_type`, so it does not touch the R5 dollar figures
 in §12.3.3 (R5 keys off `facility_type = General Cargo`, not `activity`) — this
 is a separate axis. What it *does* change is which stops resolve to Discharge
 vs. stay unresolved/draft-delta-guessed, which feeds split detection.
+
+**Reconfirmed, William, 2026-08-19** (asked directly whether a General Cargo
+berth should ever resolve to Load, analogous to how a buoy's direction gets
+decided positionally in §13.2/§13.3): *"stays locked at discharge, as per
+rules no loading takes place at general cargo facilities."* No exception —
+the ruling above stands exactly as written, still phase 2, still unbuilt.
 
 ### 13.2 Buoy sequencing — a stop before a confirmed Load must be Discharge
 
